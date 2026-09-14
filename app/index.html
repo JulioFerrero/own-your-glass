@@ -128,8 +128,13 @@
   @media (prefers-reduced-motion: reduce){.console{transition:none}}
   #log .line{white-space:pre-wrap;opacity:1}
   #log .line.new{animation:lineIn .18s ease-out both}
-  #log .ok{color:var(--ok)} #log .fail{color:var(--bad)} #log .warn{color:var(--warn)}
+  /* console colours are brighter than the panel palette: 25px mono at 10 feet
+     needs more luminance than body text. */
+  #log .ok{color:#7fe0a0} #log .fail{color:#ff8074} #log .warn{color:#ffc061}
   #log .na{color:var(--muted)}
+  #log .head{color:#fff;font-weight:600;margin-top:8px}
+  #log .cmd{color:var(--muted)}
+  #log .strong{font-weight:600}
   @keyframes lineIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
   @media (prefers-reduced-motion: reduce){#log .line.new{animation:none}}
 </style>
@@ -320,11 +325,20 @@ function move(dir) {
 
 var pinned = null;
 
+/* Real `oyg` output prefixes every line with a [timestamp], so matching only
+   at the start of the line coloured nothing at all on a real run. Strip the
+   prefix first, then look at the level token. */
 function lineClass(l) {
-  if (/^\s*(FAIL|ERR)\b/.test(l)) return "fail";
-  if (/^\s*(WARN|note)\b/i.test(l)) return "warn";
-  if (/^\s*(N\/A|NA)\b/.test(l)) return "na";
-  if (/^\s*OK\b/.test(l)) return "ok";
+  if (l.indexOf("@@EXIT:") === 0) return l === "@@EXIT:0" ? "ok strong" : "fail strong";
+  if (/^==.*==$/.test(l)) return "head";
+  if (l.indexOf("$ ") === 0) return "cmd";
+  var t = l.replace(/^\[[^\]]*\]\s*/, "").replace(/^\s+/, "");
+  if (/^(FAIL|ERR|ERROR)\b/.test(t)) return "fail";
+  if (/^(WARN|PARTIAL)\b/.test(t)) return "warn";
+  if (/^(N\/A|NA)\b/.test(t)) return "na";
+  if (/^OK\b/.test(t)) return "ok";
+  if (/\b(failed|not running|denied)\b/i.test(l)) return "fail";
+  if (/\bwarning\b/i.test(l)) return "warn";
   return "";
 }
 
