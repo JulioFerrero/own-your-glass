@@ -1,0 +1,94 @@
+# own-your-glass — telemetry / ad / cloud domain list (operator-curated)
+#
+# IMPORTANT:
+#   - This file is DISABLED by default. Network blocking requires
+#       OYG_NETWORK_BLOCK=1 oyg harden --only network
+#   - The network module consumes this file AND etc/blocklist-upstream-safe.txt.
+#     Both are merged into /var/lib/own-your-glass/hosts and resolved into
+#     `ip route add blackhole` entries (when OYG_NETWORK_IPBLOCK=1).
+#   - Sections:
+#       SAFE    — pure ad / ACR / beacon / ID-sync. Safe to apply broadly.
+#       STRICT  — ThinQ / voice / AI / LG control plane. Breaks LG features.
+#                 Requires OYG_NETWORK_STRICT=1 in addition to OYG_NETWORK_BLOCK=1.
+#   - CDN IPs change. Refresh periodically; stale entries can break apps,
+#     EPG, firmware updates, and SmartShare streaming.
+
+# =============================================================================
+# SAFE section — ad / ACR / beacon / ID-sync. Default-on with OYG_NETWORK_BLOCK=1.
+# =============================================================================
+
+# --- Konograma AudienceFlow HbbTV marker (F-1 ACR) ---
+konograma.com                    # AudienceFlow HbbTV marker provider apex; TV beacons to marker2 every ~50s
+marker.konograma.com             # primary marker endpoint (HbbTV ACR ping)
+marker2.konograma.com            # secondary marker endpoint; browser profile held 13 `knd_aflow_*` IDs dated 2016-2024
+
+# --- Amazon Alexa AVS captive-portal probes ---
+avsxappcaptiveportal.com         # UA `AvsDeviceSdk/1.26.0`; ~40 probes in 4.5 min
+
+# --- Ad-tech / ID-sync cookies found in the TV's browser profile ---
+# (with every LG consent flag false)
+demdex.net                       # Adobe AudienceManager device graph (ID sync)
+dpm.demdex.net                   # Adobe DPM (Data Processing Manager) cookie sync
+everesttech.net                  # Adobe EverestTech ad attribution
+criteo.com                       # Criteo retargeting (UID cookie)
+doubleclick.net                  # Google Ads / DV360 display (IDE cookie)
+sxp.smartclip.net                # SmartClip video ad network (SSP exchange)
+hbbtv.smartclip.net              # SmartClip HbbTV ad endpoint
+es.container.enhanced.live       # Enhanced.live ad-container (SSP/VAST)
+bitv.eu                          # Bitmovin / Smart-TV ad-tracking
+
+# --- LG smart-ad server interactive overlay (click-through on top of ads) ---
+aic.ads.lgtvcommon.com           # ad overlay interactive endpoint (VAST/click)
+
+# --- LG firmware/update servers (network-level update block) ---
+# Complements the "Block system updates" setting. NOTE: if you ever WANT to
+# take an LG firmware update (e.g. for kernel security fixes), you must remove
+# these entries first. Source: Level1Techs "LG TV Block Mini-How-To" go/lg-lockout.
+snu.lge.com                      # firmware OTA check server
+su.lge.com                       # firmware/update delivery
+su-ssl.lge.com
+su-dev.lge.com
+snu-dev.lge.com
+
+# --- Resolver bypass: known DoH / DoT provider endpoints ---
+# This device has NO firewall capability at all (no ip_tables, no nft, no tc —
+# all verified absent/unsupported on webOS 10.3.1 / kernel 5.4.268). Ports 443
+# and 853 therefore cannot be filtered. Sinkholing the provider HOSTNAMES is
+# the only on-device lever: any resolver that looks one of these up gets
+# 0.0.0.0/::1 and fails. A client using a HARDCODED DoH IP still bypasses this;
+# close that at the router instead (see README, "Router-level enforcement").
+dns.google                       # Google DoH/DoT
+dns.google.com
+cloudflare-dns.com               # Cloudflare DoH/DoT
+mozilla.cloudflare-dns.com
+chrome.cloudflare-dns.com
+one.one.one.one
+1dot1dot1dot1.cloudflare-dns.com
+dns.quad9.net                    # Quad9 DoH/DoT
+dns9.quad9.net
+doh.opendns.com                  # Cisco/OpenDNS DoH
+doh.familyshield.opendns.com
+dns.adguard.com                  # AdGuard DoH/DoT
+dns.adguard-dns.com
+doh.cleanbrowsing.org            # CleanBrowsing DoH
+dns.nextdns.io                   # NextDNS
+doh.dns.sb                       # DNS.SB
+doh.libredns.gr                  # LibreDNS
+
+# =============================================================================
+# STRICT section — ThinQ / voice / AI / LG control plane.
+
+
+# =============================================================================
+# IMPORTANT: applying these BREAKS ThinQ app, voice control, push notifications,
+# and LG cloud-account features. Requires OYG_NETWORK_STRICT=1.
+
+# --- Plain-HTTP LG ad-asset and home-screen-card / QCARD delivery ---
+ngfts.lge.com                    # LG First-Time Setup provisioning ad-asset CDN
+aic-ngfts.lge.com                # LG AIC (Ad-ID Collector) home-screen card / QCARD delivery
+eic-ngfts.lge.com                # LG EIC (Event/Engagement Collector) home-screen card delivery
+
+# --- ThinQ Connect cloud-control plane / voice AI ---
+common.lgthinq.com               # ThinQ cloud control plane (device↔cloud)
+connect-client.lgthinq.com       # ThinQ Connect client beacon
+he-eu-ai.lgthinq.com             # HomeEdge / AI voice backend (EU region)
