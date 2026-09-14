@@ -98,11 +98,28 @@
   /* ---- console ---- */
   .console{border-top:2px solid var(--rule);padding:18px 0 24px;height:236px;
     display:flex;flex-direction:column;min-height:0}
-  .console h2{font-size:27px;font-weight:500;color:var(--muted);margin-bottom:12px}
+  .chead{display:flex;align-items:center;gap:26px;margin-bottom:12px}
+  .chead h2{font-size:27px;font-weight:500;color:var(--muted);margin:0}
+  .prog{margin-left:auto;display:flex;align-items:center;gap:20px;font-size:25px;
+    color:var(--muted)}
+  .prog .bar{width:300px;height:10px;background:#2b261e;border:2px solid var(--rule);
+    position:relative;overflow:hidden}
+  .prog .bar i{position:absolute;inset:0;right:auto;width:0;background:var(--amber);
+    transition:width .35s ease-out}
+  .prog.indet .bar i{width:40%;animation:sweep 1.15s ease-in-out infinite}
+  .prog .done{color:var(--ok)} .prog .failed{color:var(--bad)}
+  @keyframes sweep{0%{left:-40%}100%{left:100%}}
+  @media (prefers-reduced-motion: reduce){
+    .prog.indet .bar i{animation:none;left:0;width:100%;opacity:.5}
+  }
   #log{font:400 25px/1.5 "IBM Plex Mono",monospace;color:#ddd5c7;overflow:auto;
-    min-height:0;white-space:pre-wrap}
+    min-height:0}
+  #log .line{white-space:pre-wrap;opacity:1}
+  #log .line.new{animation:lineIn .18s ease-out both}
   #log .ok{color:var(--ok)} #log .fail{color:var(--bad)} #log .warn{color:var(--warn)}
   #log .na{color:var(--muted)}
+  @keyframes lineIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion: reduce){#log .line.new{animation:none}}
 </style>
 </head>
 <body>
@@ -138,8 +155,14 @@
   </div>
 
   <div class="console">
-    <h2 id="logtitle">Last run</h2>
-    <pre id="log">nothing yet.</pre>
+    <div class="chead">
+      <h2 id="logtitle">Last run</h2>
+      <div class="prog" id="prog" style="display:none">
+        <span id="progtext"></span>
+        <span class="bar"><i id="barfill"></i></span>
+      </div>
+    </div>
+    <div id="log"></div>
   </div>
 </div>
 
@@ -248,26 +271,75 @@ function paint() {
 }
 function move(dir) {
   if (!nav.length) return;
-  var c = nav[idx].getBoundingClientRect();
-  var cx = c.left + c.width / 2, cy = c.top + c.height / 2;
-  var best = -1, bs = Infinity;
+  var cur = nav[idx].getBoundingClientRect();
+  var best = -1, bestPrimary = Infinity, bestPerp = Infinity, bestAligned = false;
+
   nav.forEach(function (el, i) {
     if (i === idx) return;
     var r = el.getBoundingClientRect();
-    var dx = (r.left + r.width / 2) - cx, dy = (r.top + r.height / 2) - cy;
-    var a, b;
-    if (dir === "up") { if (dy > -6) return; a = -dy; b = Math.abs(dx); }
-    else if (dir === "down") { if (dy < 6) return; a = dy; b = Math.abs(dx); }
-    else if (dir === "left") { if (dx > -6) return; a = -dx; b = Math.abs(dy); }
-    else { if (dx < 6) return; a = dx; b = Math.abs(dy); }
-    var s = a + b * 2.4;
-    if (s < bs) { bs = s; best = i; }
+    var primary, perp, overlap;
+
+    if (dir === "up" || dir === "down") {
+      primary = dir === "up" ? cur.top - r.bottom : r.top - cur.bottom;
+      if (primary < -4) return;
+      overlap = Math.min(cur.right, r.right) - Math.max(cur.left, r.left);
+      perp = Math.abs((r.left + r.width / 2) - (cur.left + cur.width / 2));
+    } else {
+      primary = dir === "left" ? cur.left - r.right : r.left - cur.right;
+      if (primary < -4) return;
+      overlap = Math.min(cur.bottom, r.bottom) - Math.max(cur.top, r.top);
+      perp = Math.abs((r.top + r.height / 2) - (cur.top + cur.height / 2));
+    }
+
+    // Rank by: lines up with us > nearest in that direction > best centred.
+    // Alignment must OUTRANK distance, otherwise a distant element that
+    // happens to be centred wins over the one directly next to us.
+    var aligned = overlap > 0;
+    var better =
+      (aligned && !bestAligned) ||
+      (aligned === bestAligned && primary < bestPrimary - 8) ||
+      (aligned === bestAligned && Math.abs(primary - bestPrimary) <= 8 && perp < bestPerp - 4);
+
+    if (better) { best = i; bestPrimary = primary; bestPerp = perp; bestAligned = aligned; }
   });
-  if (best >= 0) idx = best;
-  paint(); showFocused();
+
+  if (best >= 0) { idx = best; paint(); showFocused(); }
 }
 
 var pinned = null;
+
+function lineClass(l) {
+  if (/^\s*(FAIL|ERR)\b/.test(l)) return "fail";
+  if (/^\s*(WARN|note)\b/i.test(l)) return "warn";
+  if (/^\s*(N\/A|NA)\b/.test(l)) return "na";
+  if (/^\s*OK\b/.test(l)) return "ok";
+  return "";
+}
+
+/* Append lines one <div> at a time so the console never re-renders and never
+   jumps; new lines fade in so it reads as a stream rather than a flicker. */
+function appendLines(text, animate) {
+  var box = document.getElementById("log");
+  var frag = document.createDocumentFragment();
+  text.split("\n").forEach(function (l) {
+    if (l === "") return;
+    var d = document.createElement("div");
+    d.className = "line " + lineClass(l) + (animate ? " new" : "");
+    d.textContent = l;
+    frag.appendChild(d);
+  });
+  box.appendChild(frag);
+  while (box.childElementCount > 500) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog(title) {
+  if (!job || job.finished) job = null;
+  paintProgress();
+  document.getElementById("logtitle").textContent = title;
+  document.getElementById("log").innerHTML = "";
+  logText = "";
+}
+
 function showFocused() {
   var el = nav[idx]; if (!el) return;
   if (el.getAttribute("data-kind") === "sub") {
@@ -275,21 +347,68 @@ function showFocused() {
     showSub(pinned);
   } else {
     pinned = null;
-    document.getElementById("logtitle").textContent = labelOf(el.getAttribute("data-act"));
-    document.getElementById("log").textContent = "Press OK to run this.";
+    var a = el.getAttribute("data-act");
+    clearLog(labelOf(a));
+    appendLines(hintFor(a), false);
   }
 }
 function showSub(i) {
   var s = subs[i]; if (!s) return;
-  document.getElementById("logtitle").textContent =
-    s.name + "  (" + (s.lines.length === 1 ? "1 check" : s.lines.length + " checks") + ")";
-  document.getElementById("log").innerHTML = s.lines.map(function (x) {
-    var c = x.level === "FAIL" ? "fail" : x.level === "WARN" ? "warn" : x.level === "NA" ? "na" : "ok";
-    return '<span class="' + c + '">' + esc(x.text) + "</span>";
-  }).join("\n");
+  clearLog(s.name + "  (" + (s.lines.length === 1 ? "1 check" : s.lines.length + " checks") + ")");
+  appendLines(s.lines.map(function (x) { return x.level + "  " + x.text; }).join("\n"), false);
+}
+function hintFor(a) {
+  return {
+    "apply": "Installs the toolkit into /var/lib/own-your-glass, drops the boot hook, then applies every hardening module.",
+    "check": "Re-reads the status of all subsystems.",
+    "revert-all": "Runs oyg restore: every change this toolkit made is undone.",
+    "dns-on": "Starts the DNS sinkhole and points the TV's lookups at it.",
+    "dns-off": "Stops the DNS sinkhole and restores normal DNS.",
+    "restore-net": "Puts networking back to stock. Works with no connection."
+  }[a] || "Press OK to run this.";
 }
 
 /* ---------- data ---------- */
+var logText = "";
+var MODULES = ["capture","mic","voice","logs","remoteone","apps","policy",
+               "services","debloat","network","perms"];
+var job = null;   /* {startedAt, seen, total, lastLineAt, phase, finished, ok} */
+
+function fmtDur(ms) {
+  var s = Math.round(ms / 1000);
+  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+}
+function paintProgress() {
+  var box = document.getElementById("prog");
+  if (!job) { box.style.display = "none"; return; }
+  box.style.display = "flex";
+  var txt = document.getElementById("progtext");
+  var fill = document.getElementById("barfill");
+  var now = Date.now();
+
+  if (job.finished) {
+    box.classList.remove("indet");
+    fill.style.width = "100%";
+    txt.className = job.ok ? "done" : "failed";
+    txt.textContent = (job.ok ? "Finished in " : "Finished with errors after ") + fmtDur(now - job.startedAt);
+    return;
+  }
+  var idle = Math.round((now - job.lastLineAt) / 1000);
+  var tail = idle >= 5 ? " · no output for " + idle + "s" : "";
+  var elapsed = " · " + fmtDur(now - job.startedAt);
+
+  if (job.total) {
+    box.classList.remove("indet");
+    fill.style.width = Math.round((job.seen / job.total) * 100) + "%";
+    txt.className = "";
+    txt.textContent = job.phase + " " + job.seen + " of " + job.total + elapsed + tail;
+  } else {
+    box.classList.add("indet");
+    txt.className = "";
+    txt.textContent = job.phase + elapsed + tail;
+  }
+}
+
 function loadStatus() {
   var cmd = "sh " + ROOT + "/scripts/status-fast.sh 2>&1";
   sh(cmd, function (e, r) {
@@ -335,22 +454,57 @@ function run(act) {
   v.innerHTML = "<b>running</b> " + labelOf(act) + "&hellip;";
   appDir().then(function (dir) {
     var cmd = cmdFor(act, dir);
-    document.getElementById("logtitle").textContent = labelOf(act);
-    document.getElementById("log").textContent = "$ " + cmd + "\n";
-    exec(": > " + ALOG + "; nohup sh -c " + sq(cmd) + " >> " + ALOG + " 2>&1 &", function () {
+    clearLog(labelOf(act));
+    appendLines("$ " + cmd + "\n", false);
+    job = { startedAt: Date.now(), lastLineAt: Date.now(), seen: 0, total: 0,
+            phase: (act === "apply" ? "Installing and hardening" : labelOf(act)),
+            finished: false, ok: false };
+    paintProgress();
+    exec(": > " + ALOG + "; nohup sh -c " + sq(cmd + " >> " + ALOG + " 2>&1; echo @@EXIT:$? >> " + ALOG) + " &", function () {
       if (poller) clearInterval(poller);
-      poller = setInterval(follow, 1500);
+      poller = setInterval(function () { follow(); paintProgress(); }, 900);
+      setInterval(paintProgress, 1000);
       var ms = (act === "apply" || act === "revert-all") ? 300000 : 25000;
       setTimeout(function () { clearInterval(poller); poller = null; busy = false; loadStatus(); }, ms);
     });
   });
 }
 function follow() {
-  exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) {
+  exec("tail -c 40000 " + ALOG + " 2>/dev/null", function (e, r) {
     if (e) return;
-    var el = document.getElementById("log");
-    el.textContent = out(r) || "(no output yet)";
-    el.scrollTop = el.scrollHeight;
+    var text = out(r);
+    if (text === logText) return;                 /* nothing new */
+    var delta = "";
+    if (logText && text.lastIndexOf(logText, 0) === 0) {
+      delta = text.slice(logText.length);
+      appendLines(delta.replace(/^\n/, ""), true);          /* stream only what is new */
+    } else {
+      document.getElementById("log").innerHTML = "";         /* truncated: full refresh */
+      delta = text;
+      appendLines(text, false);
+    }
+    logText = text;
+    if (job && delta) {
+      job.lastLineAt = Date.now();
+      var heads = text.match(/^==\s*([a-z]+):\s*harden\s*==$/gm);
+      if (heads) {
+        var total = MODULES.length;
+        var seen = heads.length;
+        if (!job.total && /install\.sh/.test(text) && !heads.length) job.phase = "Installing toolkit";
+        job.total = total;
+        job.seen = Math.min(seen, total);
+        var last = heads[heads.length - 1].replace(/^==\s*/, "").replace(/:.*$/, "");
+        job.phase = "Hardening " + last;
+      }
+      var m = text.match(/@@EXIT:(\d+)/);
+      if (m) {
+        job.finished = true;
+        job.ok = (m[1] === "0");
+        if (poller) { clearInterval(poller); poller = null; }
+        paintProgress();
+        setTimeout(function () { loadStatus(); }, 400);
+      }
+    }
   });
 }
 
