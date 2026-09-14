@@ -115,11 +115,31 @@ require_root() {
 # define a local stub here — an `ensure_dirs() { ensure_dirs; }` shadow
 # recurses until the shell segfaults (observed: rc=139).
 
+# _dns_upstream_valid <ip> — reject anything that would make the resolver
+# forward to itself or into a black hole.
+#
+# WHY THIS EXISTS (observed outage, 2026-09-14): once ConnMan adopts our
+# address as the service DNS (Variant A), connectionmanager's getStatus
+# starts reporting dns1=127.0.0.2 — i.e. OUR OWN ADDRESS. The resolver then
+# discovered its own address as its upstream, forwarded every query to
+# itself, melted down, and every watchdog restart died with
+# "bind(127.0.0.2:53) failed: EADDRNOTAVAIL". With connmand also pointing at
+# 127.0.0.2 the device ended up with NO working DNS on either path.
+_dns_upstream_valid() {
+    cand=$1
+    case "$cand" in
+        ""|0.0.0.0|127.*|::1|::) return 1 ;;
+    esac
+    [ "$cand" = "$DNS_BIND" ] && return 1
+    return 0
+}
+
 # Discover the UPSTREAM resolver (the fallback nameserver; NOT something we
 # ever point connmand at). Mirrors dnssink.py's discovery: connectionmanager
 # getStatus -> dns1, then dns2. Do NOT re-introduce "the first IPv4 in the
 # blob" — that yields the netmask 255.255.255.0, which is not a resolver.
-# Echoes "<ip> <source>" on stdout.
+# Every candidate is passed through _dns_upstream_valid; if all sources fail
+# we fall back to the last upstream that worked. Echoes "<ip> <source>".
 discover_upstream() {
     ip=""
     src=""
@@ -127,10 +147,12 @@ discover_upstream() {
         ip=$("$CONNMANCTL" services 2>/dev/null \
             | sed -n 's/.*Nameservers=\(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\).*/\1/p' \
             | head -n 1)
-        if [ -n "$ip" ]; then
-            src="connmanctl"
-            printf '%s %s\n' "$ip" "$src"
+        if _dns_upstream_valid "$ip"; then
+            printf '%s %s\n' "$ip" "connmanctl"
             return 0
+        fi
+        if [ -n "$ip" ]; then
+            warn_dns "upstream '$ip' from connmanctl is loopback/self — rejected (would forward to ourselves)"
         fi
     fi
     if have luna-send; then
@@ -144,24 +166,32 @@ discover_upstream() {
             # yields 255.255.255.0, which is not a resolver: forwarding to
             # it would black-hole every lookup on the device. Only dns1 /
             # dns2 are resolvers; take those, in that order.
-            ip=$(printf '%s' "$out" \
-                | sed -n 's/.*"dns1"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
-                | head -n 1)
-            [ -z "$ip" ] && ip=$(printf '%s' "$out" \
-                | sed -n 's/.*"dns2"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
-                | head -n 1)
-            if [ -n "$ip" ]; then
-                src="luna-send(dns1/dns2)"
-                printf '%s %s\n' "$ip" "$src"
-                return 0
-            fi
+            for key in dns1 dns2; do
+                cand=$(printf '%s' "$out" | tr ',' '\n' \
+                    | grep "\"$key\"" \
+                    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+                if _dns_upstream_valid "$cand"; then
+                    printf '%s %s\n' "$cand" "luna-send($key)"
+                    return 0
+                fi
+                if [ -n "$cand" ]; then
+                    warn_dns "upstream '$cand' from luna-send/$key is loopback/self — rejected (would forward to ourselves)"
+                fi
+            done
         fi
     fi
-    ip=$(ip route show default 2>/dev/null \
+    cand=$(ip route show default 2>/dev/null \
         | awk '/^default/ { for (i=1;i<=NF;i++) if ($i == "via") { print $(i+1); exit } }')
-    if [ -n "$ip" ]; then
-        src="gateway"
-        printf '%s %s\n' "$ip" "$src"
+    if _dns_upstream_valid "$cand"; then
+        printf '%s %s\n' "$cand" "gateway"
+        return 0
+    fi
+    # Last resort: the last upstream that actually worked (remembered in
+    # state by cmd_start). This is what saves us when every live source now
+    # reports our OWN address — the exact situation that caused the outage.
+    cand=$(state_get "dns.upstream" 2>/dev/null || true)
+    if _dns_upstream_valid "$cand"; then
+        printf '%s %s\n' "$cand" "cached(state)"
         return 0
     fi
     return 1
@@ -382,6 +412,12 @@ cmd_start() {
         if up_pair=$(discover_upstream) && [ -n "${up_pair%% *}" ]; then
             upstream=${up_pair%% *}
             up_src=${up_pair#* }
+            # Remember the last upstream that worked. If ConnMan ever adopts
+            # our own address as the service DNS, every live source starts
+            # reporting 127.0.0.2 — this cached value is then the only thing
+            # that still resolves. (See _dns_upstream_valid.)
+            state_put "dns.upstream" "$upstream"
+            state_put "dns.upstream.src" "$up_src"
             ok_dns "upstream discovered via $up_src -> $upstream"
         else
             err_dns "could not discover an upstream resolver"

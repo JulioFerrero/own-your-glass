@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>own-your-glass</title>
+<style>
+  :root { --bg:#0b0f14; --fg:#e6edf3; --dim:#8b949e; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --line:#1f2a37; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:20px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex;
+    align-items:center; gap:16px; }
+  header h1 { font-size:26px; margin:0; font-weight:600; letter-spacing:.3px; }
+  header .tag { color:var(--dim); font-size:16px; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:0; height:calc(100% - 70px); }
+  .col { padding:18px 28px; overflow:auto; }
+  .col.left { border-right:1px solid var(--line); }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:1.2px; color:var(--dim);
+    margin:0 0 10px; font-weight:600; }
+  pre.status { margin:0 0 22px; font:15px/1.5 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
+  .ok   { color:var(--ok); }
+  .bad  { color:var(--bad); font-weight:700; }
+  .warn { color:var(--warn); }
+  .dim  { color:var(--dim); }
+  .btns { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  button { font:600 19px/1 inherit; color:var(--fg); background:#141b24;
+    border:1px solid var(--line); border-radius:10px; padding:16px 14px; cursor:pointer;
+    transition:border-color .12s, background .12s; }
+  button:hover, button:focus { background:#1b2531; border-color:#3b82f6; outline:none; }
+  button.danger { border-color:#7f1d1d; color:#fecaca; }
+  button.danger:hover, button.danger:focus { background:#2a1414; border-color:var(--bad); }
+  button.wide { grid-column:1 / -1; }
+  #log { margin:0; height:calc(100% - 190px); overflow:auto; background:#0e141b;
+    border:1px solid var(--line); border-radius:10px; padding:12px;
+    font:14px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; color:#c9d1d9; }
+  .spin { display:none; color:var(--warn); font-size:15px; margin-bottom:8px; }
+  .busy .spin { display:block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>own-your-glass</h1>
+  <span class="tag">on-device control &mdash; works with no network</span>
+</header>
+
+<main>
+  <div class="col left">
+    <h2>Hardening status</h2>
+    <pre id="status" class="status dim">loading&hellip;</pre>
+    <h2>DNS sinkhole</h2>
+    <pre id="dns" class="status dim">loading&hellip;</pre>
+  </div>
+
+  <div class="col right">
+    <h2>Actions</h2>
+    <div class="spin">running&hellip; (the log below updates live)</div>
+    <div class="btns">
+      <button data-act="check">Check</button>
+      <button data-act="harden">Harden</button>
+      <button data-act="dns-on">DNS sink ON</button>
+      <button data-act="dns-off">DNS sink OFF</button>
+      <button data-act="restore-net" class="danger wide">RESTORE NETWORK</button>
+      <button data-act="reboot" class="danger wide">Reboot TV</button>
+    </div>
+    <h2 style="margin-top:22px">Log</h2>
+    <pre id="log">ready.</pre>
+  </div>
+</main>
+
+<script>
+var SVC   = "luna://org.webosbrew.hbchannel.service";
+var ROOT  = "/var/lib/own-your-glass";
+var ALOG  = "/tmp/oyg-app.log";
+var busy  = false, poller = null;
+
+function ls2(uri, method, parameters, cb) {
+  // 1. high-level bridge — only exists if the app bundles webOS.js (we do not).
+  if (window.webOS && webOS.service && webOS.service.request) {
+    webOS.service.request(uri, {
+      method: method,
+      parameters: parameters || {},
+      onSuccess: function (r) { cb(null, r || {}); },
+      onFailure: function (e) { cb((e && e.errorText) || "luna call failed", null); }
+    });
+    return;
+  }
+  // 2. low-level bridge — this is the one WebAppMgr injects into web apps.
+  if (window.PalmServiceBridge) {
+    var b = new PalmServiceBridge();
+    b.onservicecallback = function (msg) {
+      var o;
+      try { o = JSON.parse(msg); } catch (err) { o = { errorText: String(msg) }; }
+      if (o && o.returnValue === false && o.errorText) cb(o.errorText, null);
+      else cb(null, o || {});
+      b = null;
+    };
+    try {
+      b.call(uri + "/" + method, JSON.stringify(parameters || {}));
+    } catch (err) {
+      cb("PalmServiceBridge.call failed: " + err, null);
+    }
+    return;
+  }
+  cb("no luna bridge (webOS.service and PalmServiceBridge both missing)", null);
+}
+
+function exec(command, cb) {
+  ls2(SVC, "exec", { command: command }, cb);
+}
+function stdout(r) { return (r && r.stdoutString) ? r.stdoutString : ""; }
+function stderr(r) { return (r && r.stderrString) ? r.stderrString : ""; }
+
+function colourise(text) {
+  return text.split("\n").map(function (l) {
+    var esc = l.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    if (/^\s*(OK|\[.*\]\s*OK)\b/.test(l) || /^\s*OK\s/.test(l)) return '<span class="ok">' + esc + "</span>";
+    if (/^\s*(FAIL|ERR)\b/.test(l) || /^\s*FAIL\s/.test(l))     return '<span class="bad">' + esc + "</span>";
+    if (/^\s*(WARN|PARTIAL)\b/.test(l))                          return '<span class="warn">' + esc + "</span>";
+    if (/^\[/.test(l) || /^==/.test(l))                          return '<span class="dim">' + esc + "</span>";
+    return esc;
+  }).join("\n");
+}
+
+function refresh() {
+  exec("sh " + ROOT + "/oyg status 2>&1", function (e, r) {
+    var el = document.getElementById("status");
+    if (e) { el.innerHTML = '<span class="bad">' + e + "</span>"; return; }
+    el.innerHTML = colourise(stdout(r) || "(no output)");
+  });
+  exec("sh " + ROOT + "/scripts/dns.sh status 2>&1", function (e, r) {
+    var el = document.getElementById("dns");
+    el.innerHTML = e ? '<span class="bad">' + e + "</span>" : colourise(stdout(r) || "(no output)");
+  });
+}
+
+function log(text) { document.getElementById("log").textContent = text; }
+
+function follow() {
+  exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) {
+    if (!e) log(stdout(r) || "(empty)");
+    var el = document.getElementById("log"); el.scrollTop = el.scrollHeight;
+  });
+}
+
+function setBusy(on) {
+  busy = on;
+  document.body.classList.toggle("busy", on);
+  if (poller) { clearInterval(poller); poller = null; }
+  if (on) poller = setInterval(follow, 1500);
+}
+
+var ACTIONS = {
+  "check":      ROOT + "/oyg status",
+  "harden":     ROOT + "/oyg harden",
+  "dns-on":     ROOT + "/scripts/dns.sh start",
+  "dns-off":    ROOT + "/scripts/dns.sh stop",
+  "restore-net":ROOT + "/scripts/recover-network.sh",
+  "reboot":     "reboot"
+};
+
+function run(act) {
+  if (busy) return;
+  var cmd = ACTIONS[act];
+  if (!cmd) return;
+  log("$ " + cmd + "\n");
+  setBusy(true);
+  // Detached: the luna call returns immediately, the log pane follows the file.
+  exec(": > " + ALOG + "; nohup sh -c " + sq(cmd) + " >> " + ALOG + " 2>&1 &", function () {
+    setTimeout(function () { setBusy(false); refresh(); }, 9000);
+  });
+}
+
+function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+Array.prototype.forEach.call(document.querySelectorAll("button[data-act]"), function (b) {
+  b.addEventListener("click", function () { run(b.getAttribute("data-act")); });
+});
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

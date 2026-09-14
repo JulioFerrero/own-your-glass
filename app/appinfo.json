@@ -1,0 +1,26 @@
+{
+  "id": "org.ownyourglass.control",
+  "type": "web",
+  "main": "index.html",
+  "title": "own-your-glass",
+  "vendor": "own-your-glass",
+  "version": "0.2.0",
+  "icon": "icon.png",
+  "largeIcon": "icon.png",
+  "bgColor": "#0b0f14",
+  "iconColor": "#22c55e",
+  "transparent": false,
+  "defaultWindowType": "card",
+  "handlesRelaunch": true,
+  "disableBackHistoryAPI": true,
+  "supportQuickStart": true,
+  "inspectable": true,
+  "requiredPermissions": [
+    "applications",
+    "applications.internal",
+    "settings",
+    "system",
+    "database",
+    "database.internal"
+  ]
+}

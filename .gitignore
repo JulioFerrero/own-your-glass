@@ -9,3 +9,5 @@
 .idea/
 *.swp
 *~
+dist/
+app/._*
