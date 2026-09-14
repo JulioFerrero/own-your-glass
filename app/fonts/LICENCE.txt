@@ -1,0 +1,4 @@
+IBM Plex Sans and IBM Plex Mono
+Copyright (c) IBM Corp.
+Licensed under the SIL Open Font License, Version 1.1.
+https://www.ibm.com/plex/  ·  https://scripts.sil.org/OFL
