@@ -149,7 +149,6 @@ DEBLOAT_BINARIES_SPEC='
 /usr/sbin/sportsalert
 /usr/palm/services/com.webos.service.dial/discovery-server.js|ss.gateway
 /usr/sbin/iconnectivity
-/usr/sbin/sdx
 /usr/sbin/uploadd|uploadd
 '
 
@@ -167,11 +166,42 @@ DEBLOAT_BINARIES_SPEC='
 #     Phone-connectivity helper (LG TV Companion / mobile pairing).
 #     Kills the "pair your phone" code path; casting via the ThinQ
 #     app also relies on it.
-#   /usr/sbin/sdx
-#     Software-delivery daemon (over-the-air content / store-tile
-#     delivery). Kills LG's content-update channel; the device still
-#     launches installed apps but stops receiving new / updated
-#     content tiles.
+#   /usr/sbin/sdx — DELIBERATELY NOT NEUTRALISED. See the warning below.
+#
+# ---------------------------------------------------------------------------
+# DO NOT add /usr/sbin/sdx back to DEBLOAT_BINARIES_SPEC.
+#
+# It looks like pure vendor surface — and it is LG's device-identity /
+# software-delivery daemon (luna://com.webos.service.sdx/getDeviceUuid
+# returns a device UUID plus a billing ID) — but bind-mounting /dev/null
+# over it SILENTLY BREAKS THE TV'S SETTINGS UI.
+#
+# Observed failure mode (LG OLED55B56LA, webOS 10.3.1):
+#   * Pressing the remote's gear/Settings button does NOTHING AT ALL. No
+#     error, no spinner, no dialog — the button simply appears dead.
+#   * surface-manager still logs `com.webos.app.quicksettings
+#     visible:true`, so the system log looks perfectly healthy.
+#   * The launcher's gear icon fails identically (both the remote key and
+#     the launcher route through com.webos.app.quicksettings, launched by
+#     com.webos.service.systemUIManager).
+#   * Restoring the sdx binary makes the panel work again immediately.
+#
+# THE RELIABLE PASS/FAIL SIGNAL: when the panel really initialises,
+# surface-manager emits
+#     com.webos.app.quicksettings NL_QUICKSETTINGS_EDITMODE {...}
+# When sdx is neutralised that line is NEVER emitted — the window is marked
+# visible but never initialises. Grep for QUICKSETTINGS_EDITMODE after a
+# gear press to test any change that touches these binaries.
+#
+# The general lesson: "luna-launched binary" does NOT imply optional
+# front-end. Before neutralising one, confirm the TV's own UI still works —
+# especially the settings/quick-settings panel, which fails with no
+# user-visible error path.
+#
+# sdx's network egress is already constrained by the `network` module (LG
+# domains are blocked), so leaving the binary alive does not leave its
+# telemetry unblocked.
+# ---------------------------------------------------------------------------
 #   /usr/sbin/uploadd|uploadd
 #     Log-upload daemon (sends device logs to LG — telemetry). The
 #     `<path>|uploadd` form uses an explicit kill-name override only

@@ -84,10 +84,22 @@ com.webos.app.acrhdmi4 com.webos.app.acroverlay com.webos.app.adoverlay com.webo
 com.webos.app.adhdmi1 com.webos.app.adhdmi2 com.webos.app.adhdmi3 com.webos.app.adhdmi4
 com.webos.app.fooddelivery com.webos.app.fooddeliveryex com.webos.app.fooddeliveryhdmi1
 com.webos.app.fooddeliveryhdmi2 com.webos.app.fooddeliveryhdmi3 com.webos.app.fooddeliveryhdmi4
-com.webos.app.overlaycontainer com.webos.app.overlaycontainerex com.webos.app.overlaycontainerhdmi1
-com.webos.app.overlaycontainerhdmi2 com.webos.app.overlaycontainerhdmi3 com.webos.app.overlaycontainerhdmi4
 com.webos.app.overlaymembership com.webos.app.videoads com.webos.app.cmp-client com.webos.app.newandhot
 '
+# NOTE — deliberately NOT blocked: com.webos.app.overlaycontainer,
+# overlaycontainerex, overlaycontainerhdmi1..4.
+#
+# These look like ad machinery by name, but they are the *containers* that
+# host OVERLAY WINDOWS, not the ads themselves (the ad/ACR content lives in
+# adoverlay / adoverlayex / acroverlay / fooddelivery*, which we DO block).
+# Blocking the container breaks system-UI overlays with no visible error: the
+# panel is still reported `visible:true` by surface-manager, but there is no
+# container to composite into, so nothing is drawn. On this device it killed
+# the quick-settings panel — the panel opened by BOTH the remote's gear
+# button and the launcher's gear icon (both route through
+# com.webos.app.quicksettings), leaving the user with a dead-looking button.
+# Weigh the trade-off before re-adding: blocking the container suppresses
+# LG's overlay ads at the cost of breaking user-facing system overlays.
 # --- Vendor remote-support app (invisible; the RemoteOne front-end) ---
 APPS_GROUP_REMOTE='
 com.webos.app.remoteservice
