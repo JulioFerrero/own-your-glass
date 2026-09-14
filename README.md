@@ -279,9 +279,6 @@ reproduction matrix) if the bus returned zero bytes — that was the bug
 that produced two false findings ("luna-send broken", "LS2 unreachable")
 in the verification report. See `docs/VERIFICATION-REPORT.md` §0.1.
 
-This is a native system toast (it renders over any screen) as opposed
-to the CDP DOM overlay that lives inside a web app's tab.
-
 ---
 
 ## `oyg list`
