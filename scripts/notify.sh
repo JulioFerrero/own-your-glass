@@ -32,13 +32,18 @@ sh_quote_sed() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
 SSH_BASE="ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
 # luna <uri> <payload> [appid] — local or ssh, always with </dev/null>.
 luna() {
-    uri=$1; payload=$2; appid_arg=${3:-}; af=""
-    [ -n "$appid_arg" ] && af=" -a '$appid_arg'"
+    uri=$1; payload=$2; appid_arg=${3:-}
     if [ "$LOCAL_MODE" = "1" ]; then
-        # shellcheck disable=SC2086
-        luna-send -i -n 1 -f "$uri"$af "$payload" </dev/null
+        # -a needs no quoting here: it is an argv entry, not remote text.
+        if [ -n "$appid_arg" ]; then
+            luna-send -i -n 1 -f "$uri" -a "$appid_arg" "$payload" </dev/null
+        else
+            luna-send -i -n 1 -f "$uri" "$payload" </dev/null
+        fi
     else
         rp=$(sh_quote_sed "$payload")
+        af=""
+        [ -n "$appid_arg" ] && af=" -a '$appid_arg'"
         $SSH_BASE -p "$TV_PORT" "$TV_USER@$TV_HOST" \
             "luna-send -i -n 1 -f $uri$af '$rp' </dev/null"
     fi
