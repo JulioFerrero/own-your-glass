@@ -81,7 +81,7 @@ list_modules() {
             capture)
                 printf 'capture     chattr+immutable / chmod+watcher on /tmp/capture.rgb; mount --bind /dev/null on vtCaptureTestSuite (vendor ro)\n' ;;
             debloat)
-                printf 'debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine; bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + sdx (+ other luna-launched binaries if present); re-applied on every boot\n' ;;
+                printf 'debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine + wowplay (Type=static, sticks); bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + sdx + uploadd (Type=dynamic LS2 service, bind defeats ls-hubd respawn) (+ other luna-launched binaries if present); re-applied on every boot\n' ;;
             mic)
                 printf 'mic         chmod 000 + mount --bind /dev/null over each ALSA capture PCM (pcmC*D*c); playback preserved\n' ;;
             logs)

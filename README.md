@@ -289,12 +289,12 @@ Module      What it does
 services    stop+kill contentminer, objectdetection, adoverlay, acr, remotediag (+ iot-client, pushclient if OYG_AGGRESSIVE=1)
 capture     chattr+immutable / chmod+watcher on /tmp/capture.rgb; mount --bind /dev/null on vtCaptureTestSuite (vendor ro)
 apps        hide a curated list of unwanted apps from the launcher via LG blockedSystemAppList/<REGION>.json (ad machinery, remote-support, SDK examples, demo apps); preserves existing entries; skips IDs absent on device
-debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine; bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + sdx (+ other luna-launched binaries if present); re-applied on every boot
+debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine + wowplay (Type=static, sticks); bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + sdx + uploadd (Type=dynamic LS2 service, bind defeats ls-hubd respawn) (+ other luna-launched binaries if present); re-applied on every boot
 mic         chmod 000 + mount --bind /dev/null over each ALSA capture PCM (pcmC*D*c); playback preserved
 voice       chmod 000 + mount --bind /dev/null over voiceinput_hidraw / voiceinput / voiceconductor (Magic Remote mic); /dev/hidraw0 untouched
 logs        periodic clear of /tmp/var/log/messages and /tmp/app.voice.log (damage limitation)
 network     three-layer mitigation: /etc/hosts bind-overlay with dual-stack (IPv4 + IPv6 sinkhole) sinkhole (always); blackhole public resolvers (always); per-IP blackhole (opt-in OYG_NETWORK_IPBLOCK=1)
-perms       chmod webOSbrew hbchannel + Google Home runtime paths (opt-in, OYG_AGGRESSIVE=1)
+perms       chmod webOSbrew hbchannel + Google Home runtime paths (opt-in, OYG_AGGRESSIVE=1); re-applied on every boot when previously applied
 remoteone   verify /mnt/lg/cmn_data/remoteDebug/ absent; optionally tighten cmn_data (aggressive)
 policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported)
 ```
@@ -311,7 +311,7 @@ risky behaviour. **Read the linked findings in `docs/FINDINGS.md` first.**
 | Flag | Effect | What can break |
 |------|--------|----------------|
 | `OYG_AGGRESSIVE=1` (services) | also stops `iot-client` + `pushclient` (luna-launched AWS IoT MQTT + LG push channel; `systemctl stop` is a no-op for the actual process, so the module `kill`s it and re-kills on every boot) | ThinQ app, voice control, push notifications; may be re-spawned on demand by `ls-hubd` (boot hook is best-effort, not permanent) |
-| `OYG_DEBLOAT=1` (debloat) | stops `mycar`, `familycare`, `buddyconnector`, `alwaysready`, `ai-inference-manager`, `avahi-daemon`, `avahi-adaptor`, `com.webos.service.ruleengine` and `chmod 000` + `mount --bind /dev/null` over `/usr/bin/com.webos.app.voice` (the preloaded voice-app UI, ~51 MB), `ss.gateway` (the DIAL second-screen discovery server, was burning 6m09s+ of CPU and listening on TCP 8008), `iconnectivity` (LG phone-connectivity helper), `sdx` (software-delivery / store-tile updates), and the luna-launched binaries (`lg.thinqai.adapter`, `airessrvallocator`, `com.webos.service.iotproxy`, `sportsalert`) where present | family-care, buddy-connector, alwaysready, AI inference, avahi/mDNS, the webOS rule engine, the voice-app UI in the launcher, screen-share / DIAL cast discovery (Chromecast-style), LG phone-pairing / ThinQ app cast, LG's over-the-air content-tile updates; may be re-spawned on demand by `ls-hubd` (boot hook is best-effort, not permanent) |
+| `OYG_DEBLOAT=1` (debloat) | stops `mycar`, `familycare`, `buddyconnector`, `alwaysready`, `ai-inference-manager`, `avahi-daemon`, `avahi-adaptor`, `com.webos.service.ruleengine`, `wowplay` and `chmod 000` + `mount --bind /dev/null` over `/usr/bin/com.webos.app.voice` (the preloaded voice-app UI, ~51 MB), `ss.gateway` (the DIAL second-screen discovery server, was burning 6m09s+ of CPU and listening on TCP 8008), `iconnectivity` (LG phone-connectivity helper), `sdx` (software-delivery / store-tile updates), `uploadd` (log-upload daemon; LS2 `Type=dynamic` — bind-over-binary is the only structural fix because `ls-hubd` respawns on the next `com.palm.uploadd` call), and the luna-launched binaries (`lg.thinqai.adapter`, `airessrvallocator`, `com.webos.service.iotproxy`, `sportsalert`) where present | family-care, buddy-connector, alwaysready, AI inference, avahi/mDNS, the webOS rule engine, the wowplay screen-mirroring receiver, the voice-app UI in the launcher, screen-share / DIAL cast discovery (Chromecast-style), LG phone-pairing / ThinQ app cast, LG's over-the-air content-tile updates, LG's log-upload telemetry; `wowplay` stop is permanent (`Type=static`), the rest may be re-spawned on demand by `ls-hubd` except for `uploadd` which is structurally defeated by the bind |
 | `OYG_AGGRESSIVE=1` (perms) | chmods webOSbrew hbchannel + Google Home runtime | webOSbrew updates, Google Home on TV |
 | `OYG_AGGRESSIVE=1` (remoteone) | chmods `/mnt/lg/cmn_data` from 0777 to 0755 | vendor apps that rely on that directory being world-writable |
 | `OYG_TOS_IDS="S_VNG S_TAG"` (policy) | allow-list for the consent-decline step: only the named `"id"` entries are force-declined; default is decline ALL | depends on which ids you include |
@@ -1013,14 +1013,17 @@ At boot the hook:
    re-applied only if the state also shows `network.ipblock=1`. The
    opt-in flags are re-derived from the state file so the boot
    environment doesn't need to know about them.
-
-The other module (`perms`) is deliberately not in the boot hook
-because:
-
-- `perms`: vendor code paths may be re-extracted by webOSbrew updates,
-  so re-applying on every boot would be wasted work.
-
-`mic` IS in the boot hook. See [Capture-device neutralisation](#capture-device-neutralisation-the-mic-module) below.
+5. If `$OYG_ROOT/state` shows `perms.applied=1`, re-applies the
+   `perms` module (chmods webOSbrew hbchannel + Google Home runtime
+   paths). The opt-in flag (`OYG_AGGRESSIVE=1`) is re-exported from
+   state so the boot environment does not need it. The block runs
+   regardless of network availability — `perms` is purely local. The
+   operator opts in once via `OYG_AGGRESSIVE=1 oyg harden --only
+   perms` after install; `install.sh` does not run that command for
+   them. Re-applying on every boot is required because webOSbrew
+   updates may re-extract those paths in mode 0777 between boots,
+   restoring the local privilege-escalation path that `perms` exists
+   to close.
 
 ---
 
