@@ -784,6 +784,24 @@ def main():
     sys.stdout.flush()
 
 
+def _upstream_ok(ip):
+    """Reject an upstream that would make the resolver forward to itself.
+
+    Observed outage (2026-09-14): once ConnMan adopts our address as the
+    service DNS, connectionmanager reports dns1=127.0.0.2 — our own bind
+    address. Discovering that as the upstream creates a forward loop: every
+    query is handed back to us, the resolver melts down, and watchdog
+    restarts die with bind(127.0.0.2:53) EADDRNOTAVAIL.
+    """
+    if not ip:
+        return False
+    if ip in ("0.0.0.0", "::", "::1"):
+        return False
+    if ip.startswith("127."):
+        return False
+    return True
+
+
 def discover_upstream():
     """Find the real upstream resolver connmand learned over DHCP.
 
@@ -803,6 +821,11 @@ def discover_upstream():
         except Exception as e:
             sys.stderr.write("%s: discovery via %s failed: %s\n" % (PROG, src_label, e))
             continue
+        if ip and not _upstream_ok(ip):
+            sys.stderr.write("%s: ignoring upstream %s from %s "
+                             "(loopback/self — would forward to ourselves)\n"
+                             % (PROG, ip, src_label))
+            ip = ""
         if ip:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
