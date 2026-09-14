@@ -84,6 +84,7 @@ After install, no hardening is applied yet — pick your modules and re-run with
 - [Module table](#module-table)
 - [How it works (the four techniques)](#how-it-works-the-four-techniques)
 - [Install (on the TV)](#install-on-the-tv)
+- [Watch what the TV talks to](#watch-what-the-tv-talks-to)
 - [Send a notification to the TV](#send-a-notification-to-the-tv)
 - [`oyg list`](#oyg-list)
 - [Warn-on-risk / opt-in flags](#warn-on-risk--opt-in-flags)
@@ -239,6 +240,60 @@ sh uninstall.sh
 
 (or `/var/lib/own-your-glass/oyg restore` if you want to keep the
 tool installed but undo the hardening.)
+
+---
+
+## Watch what the TV talks to
+
+`scripts/sniff.sh` is a small **on-device** packet sniffer for this TV.
+It needs no `tcpdump` / `libpcap` / `dumpcap` — those aren't installed
+on the device and netfilter is absent — so it uses Python's stdlib
+`socket.AF_PACKET` + `ETH_P_ALL` instead. Runs as root; SSH into the TV
+already gives you root.
+
+```sh
+ssh lgtv 'sh /var/lib/own-your-glass/sniff.sh --seconds 30'
+ssh lgtv 'sh /var/lib/own-your-glass/sniff.sh --pcap /tmp/tv.pcap --seconds 60'
+scp lgtv:/tmp/tv.pcap .   # then open in Wireshark
+```
+
+Two modes: **live text** (default) prints one line per interesting
+event, flushed, so the operator on the other end of the SSH sees the
+TV's connections stream in real time; **`--pcap FILE`** writes a
+libpcap-format capture (magic `0xa1b2c3d4`, version 2.4, linktype 1 /
+Ethernet) that opens cleanly in Wireshark.
+
+Surfaced events: **DNS queries** (UDP/53, both directions), **TCP SYN
+attempts**, and **sinkhole hits** (destination `0.0.0.0` or `::1` —
+i.e. one of our `/etc/hosts` block entries winning against the
+resolver). **TLS SNI** is extracted from `ClientHello` payloads so we
+can name HTTPS destinations even though the traffic is encrypted — that
+is the only place the destination hostname appears in cleartext for
+TLS, which is the entire point of the SNI field and why HTTPS-everywhere
+and the network module's blocklist work in the first place.
+
+Defaults: TCP 22 (ssh) and 9998 (CDP) are auto-excluded so the
+operator's own session doesn't drown the output; the interface is
+auto-detected from `ip route show default` (likely `wlan0`). Override
+with `-i IFACE`. Bound a capture with `--seconds N`.
+
+Flags:
+
+- `-i IFACE` — capture interface (default: auto-detect from default route)
+- `-d, --seconds N` — stop after N seconds (default: unbounded, Ctrl-C)
+- `--pcap FILE` — write a libpcap capture (open in Wireshark)
+- `--exclude-port PORT` — repeatable; default-excludes TCP 22 + 9998
+- `--dns`, `--sni`, `--tcp`, `--blocked`, `--all` — filter categories
+  (default: DNS + SNI + SYN + sinkhole; `--all` adds the per-packet firehose)
+- `-q, --quiet` — suppress the banner
+
+**Why SNI matters.** TLS 1.2+ encrypts everything in the HTTPS record
+*after* the `ClientHello`, but the `server_name` extension in the
+`ClientHello` is sent in cleartext. It is the only field that names the
+destination hostname before encryption kicks in. The MITM-in-the-middle
+proxies at workplaces and LG's own update-telemetry path both rely on
+this; we rely on it the other way to see where the TV is going without
+having to decrypt anything.
 
 ---
 
@@ -962,6 +1017,8 @@ own-your-glass/
 │   └── blocklist-upstream-safe.txt CC BY 4.0 snapshot of upstream SAFE list
 ├── scripts/refresh-blocklist.sh    re-fetch upstream (off-device only)
 ├── scripts/notify.sh              send a native webOS toast to the TV (on-device or via ssh)
+├── scripts/sniff.sh               on-device packet sniffer (AF_PACKET + ETH_P_ALL, no libpcap)
+├── scripts/sniff.py               the sniffer itself (stdlib only); --pcap FILE exports a Wireshark-readable capture
 └── docs/FINDINGS.md           finding → countermeasure → effectiveness table
 ```
 
