@@ -51,7 +51,11 @@ RESTART_GAP=${OYG_WATCHDNS_GAP:-2}
 FAILS_BEFORE_ACTION=${OYG_WATCHDNS_FAILS:-2}
 STATE_PID="$OYG_ROOT/dns.pid"
 WATCHDOG_PID="$OYG_ROOT/watch-dns.pid"
-DNS_BIND=127.0.0.2
+# Bind address comes from $OYG_ROOT/dns.bind (written by dns.sh/go-c.sh),
+# NOT hardcoded: after Variant C the sink lives on 127.0.0.1 — probing a
+# hardcoded 127.0.0.2 here made the watchdog declare a healthy resolver
+# dead and revert the override (observed 2026-09-14).
+DNS_BIND=$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)
 DNS_PORT=53
 PROBE_NAME=es.nextlgsdp.com
 

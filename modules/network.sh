@@ -398,12 +398,14 @@ mod_network_layer3_restore() {
 }
 
 # -----------------------------------------------------------------------------
-# Layer 4 — DNS sinkhole resolver on 127.0.0.2:53, hooked in via a
-# bind-mount over /etc/resolv.conf (NOT via ConnMan). The ConnMan route —
+# Layer 4 — DNS sinkhole resolver hooked in via a bind-mount over
+# /etc/resolv.conf (NOT via ConnMan). The ConnMan route —
 # editing /var/lib/connman/<svc>/settings and nudging connmand — took this
 # TV off the network for ~30 minutes (see the post-mortem in scripts/dns.sh);
-# this toolkit NEVER signals, reloads or restarts connmand. The managed
-# resolv.conf lists 127.0.0.2 first and the real upstream as a fallback, so
+# this toolkit NEVER signals, reloads or restarts connmand. The bind address
+# comes from $OYG_ROOT/dns.bind: 127.0.0.2 by default, 127.0.0.1 once Variant
+# C (go-c.sh) took connmand's proxy out of the way. The managed
+# resolv.conf lists the sink first and the real upstream as a fallback, so
 # DNS survives even if the resolver dies. Start-up ordering: dns.sh starts
 # and verifies the resolver BEFORE pointing resolv.conf at it, and an
 # auto-revert timer (default 180 s) unmounts the override if an apply is
@@ -418,7 +420,7 @@ mod_network_layer3_restore() {
 # up without restarting the listener.
 # -----------------------------------------------------------------------------
 
-DNS_BIND=127.0.0.2
+DNS_BIND=$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)
 DNS_PORT=53
 
 # Resolve the path of scripts/dns.sh. Both `oyg` and `install.sh` set

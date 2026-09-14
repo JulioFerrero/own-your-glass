@@ -66,12 +66,13 @@ printf 'NETWORK|NA|DoH/443 + DoT/853 cannot be blocked on-device (no netfilter)\
 # ------------------------------------------------------------------- DNS ----
 grp DNS "DNS sinkhole"
 pid=$(pgrep -f dnssink.py 2>/dev/null | head -1)
+bind=$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)
 if [ -n "$pid" ]; then
-    printf 'DNS|OK|resolver running (pid %s) on 127.0.0.2:53\n' "$pid"
+    printf 'DNS|OK|resolver running (pid %s) on %s:53\n' "$pid" "$bind"
 else
     printf 'DNS|FAIL|resolver not running\n'
 fi
-if is_mount /var/lib/misc/resolv.conf; then
+if is_mount /etc/resolv.conf || is_mount /var/lib/misc/resolv.conf; then
     printf 'DNS|OK|query path redirected (resolv.conf override mounted)\n'
 else
     printf 'DNS|WARN|no resolv.conf override — DNS bypasses the sink\n'

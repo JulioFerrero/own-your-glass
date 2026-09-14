@@ -7,6 +7,7 @@ STAMP=$(date '+%H:%M:%S')
 logit() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> $LOG; }
 
 : > $LOG
+rm -f $R/go-c.done
 logit "=== Variant C starting ==="
 logit "connmand pid before: $(pidof connmand)"
 
@@ -104,4 +105,5 @@ case "$ip" in 192.168.1.*) ;; *) logit "VERIFY FAILED: wlan0 has no address"; sh
 # 8. success — cancel the rollback timer
 tp=$(cat $R/go-c-rollback.pid 2>/dev/null)
 [ -n "$tp" ] && kill $tp 2>/dev/null && rm -f $R/go-c-rollback.pid
+touch $R/go-c.done
 logit "=== SUCCESS: rollback cancelled. ConnMan proxy is OFF; sink owns 127.0.0.1:53 ==="
