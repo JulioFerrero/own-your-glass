@@ -3,11 +3,11 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# `systemctl` on this TV takes ~88 SECONDS per invocation (systemd spins at
-# ~90% of a core; the box has 1287 mounts because /usr and /dev are shared
-# mounts and every bind propagates into all 7 app jails). `oyg status` makes
-# dozens of systemctl calls, so it needs MINUTES and the app's UI just sat on
-# "loading…" forever.
+# `oyg status` walks every module with `systemctl` per unit and takes tens of
+# seconds; polling it from a UI opened a new call before the last returned, and
+# those stacked up until they saturated systemd (274 orphans, and systemctl went
+# from 0.02s to ~88s per call — see the note in the app). This script answers in
+# under a second by using only fast primitives and checking observable effect.
 #
 # This script answers in well under a second by using only fast primitives:
 #   pidof                     ~0.09s
@@ -46,7 +46,7 @@ grp() { printf '%s|HEADER|%s\n' "$1" "$2"; }
 grp SYSTEM "System"
 printf 'SYSTEM|OK|load %s\n' "$(cut -d' ' -f1-3 /proc/loadavg | tr ' ' ',')"
 mnt=$(wc -l </proc/mounts 2>/dev/null)
-printf 'SYSTEM|WARN|mounts %s (systemd spins: systemctl ~88s/call)\n' "${mnt:-?}"
+printf 'SYSTEM|OK|%s mounts (binds propagate into the 7 app jails)\n' "${mnt:-?}"
 printf 'SYSTEM|OK|uptime %s\n' "$(cut -d. -f1 /proc/uptime | awk '{printf "%dh%02dm", $1/3600, ($1%3600)/60}')"
 
 # --------------------------------------------------------------- NETWORK ----
