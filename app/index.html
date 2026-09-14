@@ -87,16 +87,24 @@
   button.primary{border-color:var(--amber);color:var(--amber);background:var(--ink-2)}
   button.primary .hint{color:var(--muted)}
   button.primary.focus{background:var(--amber);border-color:var(--amber);
-    color:#1d1608;transform:scale(1.02)}
+    color:#1d1608;box-shadow:inset 0 0 0 4px rgba(255,255,255,.35)}
   button.primary.focus .hint{color:#4a3a17}
-  button.focus{border-color:var(--amber);background:#2a2419;transform:scale(1.02)}
+  /* Focus must not resize the box: a scale() grows the element past its
+     column and overflow:auto clips it on the right. Use border + brightness
+     + an INSET ring, none of which change layout or can be clipped. */
+  button.focus{border-color:var(--amber);background:#33291a;
+    box-shadow:inset 0 0 0 4px rgba(224,163,62,.4)}
   button.focus .hint{color:var(--text)}
   button.primary.focus .hint{color:#4a3a17}
-  button.warnkey.focus{border-color:var(--bad);background:#2a1a18}
+  button.warnkey.focus{border-color:var(--bad);background:#2f1a18;
+    box-shadow:inset 0 0 0 4px rgba(226,100,90,.35)}
+  button.focus .hint{color:var(--text)}
+  button.warnkey.focus .hint{color:var(--text)}
   .groupname{font-size:26px;color:var(--muted);margin:24px 0 12px}
 
   /* ---- console ---- */
   .console{border-top:2px solid var(--rule);padding:18px 0 24px;height:236px;
+    transition:height .28s ease-out;
     display:flex;flex-direction:column;min-height:0}
   .chead{display:flex;align-items:center;gap:26px;margin-bottom:12px}
   .chead h2{font-size:27px;font-weight:500;color:var(--muted);margin:0}
@@ -114,6 +122,10 @@
   }
   #log{font:400 25px/1.5 "IBM Plex Mono",monospace;color:#ddd5c7;overflow:auto;
     min-height:0}
+  /* while a job runs, the log gets the space: the board shrinks and the
+     rows scroll, so the streaming output is the thing you can read. */
+  .shell.running .console{height:460px}
+  @media (prefers-reduced-motion: reduce){.console{transition:none}}
   #log .line{white-space:pre-wrap;opacity:1}
   #log .line.new{animation:lineIn .18s ease-out both}
   #log .ok{color:var(--ok)} #log .fail{color:var(--bad)} #log .warn{color:var(--warn)}
@@ -379,6 +391,8 @@ function fmtDur(ms) {
   return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
 }
 function paintProgress() {
+  var shell = document.querySelector('.shell');
+  if (shell) shell.classList.toggle('running', !!(job && !job.finished));
   var box = document.getElementById("prog");
   if (!job) { box.style.display = "none"; return; }
   box.style.display = "flex";
