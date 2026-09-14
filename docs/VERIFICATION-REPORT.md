@@ -18,8 +18,41 @@
 
 ---
 
+## 0.1 Errata
+
+**What was wrongly claimed.** §5.3 item 3 stated that "`luna-send` is non-functional from the SSH shell" and that "LS2 is unreachable". The conclusion (broken bus / broken tool) was wrong; the observation (zero bytes, no reply) was correct but mis-diagnosed.
+
+**Root cause — the `luna-send` stdin trap.** `luna-send` reads the bus reply on a pipe that is also fed from STDIN. If STDIN closes before the reply arrives, `luna-send` exits `rc=0` with **zero bytes** on stdout/stderr — the call appears to silently succeed. The original session drove every call through `ssh host 'sh -s' <<'REMOTE' … REMOTE` heredocs; the heredoc closed STDIN at EOF, the reply was lost, and the operator saw "no output, rc=0". Every other `luna-send` invocation in this report (and on the device) was avoided because of this misdiagnosis.
+
+**One-line repro / fix.** Add `</dev/null` at the end of every `luna-send` call:
+
+```
+$ luna-send -i -n 1 -f luna://com.webos.notification/createToast \
+    '{"message":"Now you own your glass!","sourceId":"com.webos.surfacemanager"}' </dev/null
+{ "returnValue": true, "toastId": "com.webos.surfacemanager-1789348395230" }
+```
+
+Without `</dev/null` (or with STDIN closed by a heredoc / piped parent) the same call produces **zero bytes**. The dimension that matters is STDIN only:
+
+```
+  A $( )    + stdin=/dev/null      bytes=108
+  B $( )    + stdin=inherited      bytes=0
+  C pipe|cat + stdin=/dev/null     bytes=109
+  D >file    + stdin=inherited     bytes=0
+  E no -i >file + inherited        bytes=0
+```
+
+**Capability this adds.** With `</dev/null` in place a local root process on the TV can now drive any LS2 method that is reachable without explicit client permission. As a worked example, `createToast` returned `{"returnValue":true,…}` with no appId (the method needs no special permission). This is the foundation for the `scripts/notify.sh` wrapper shipped with `own-your-glass`.
+
+**Impact on other findings.** None of the other findings in this report depend on the false claim. The Part-1 LS2 reachability conclusions all rest on filesystem evidence or on driving vendor binaries directly (e.g. `vtCaptureTestSuite`, `tcpdump`), not on `luna-send`. The single Appendix-C entry that *did* lean on the claim (`blendedCapture`) is now corrected to attribute the gap to the `videoMuteState` permission gate only.
+
+**Tripwire.** `scripts/notify.sh --selftest` calls `getServiceAPIVersions` with the documented payload and reports FAIL (with the matrix above) if the bus returned zero bytes. Run it on first contact with a fresh session before relying on `luna-send`.
+
+---
+
 ## Table of contents
 
+0.1. [Errata](#01-errata)
 1. [TL;DR](#1-tldr)
 2. [Scope, authorization and legal framing](#2-scope-authorization-and-legal-framing)
 3. [Executive summary — findings with severity](#3-executive-summary--findings-with-severity)
@@ -232,7 +265,7 @@ lg-nexus-tests/
 
 1. **Private Wi-Fi Address** (MAC randomisation) meant the Mac's ARP poison initially targeted the wrong MAC. Fixed by auto-detecting `ifconfig <iface> | awk '/ether/{print $2}'`.
 2. **ICMP redirects**: macOS will tell a spoofed client to bypass the MITM. Suppressed with `sysctl -w net.inet.ip.redirect=0`.
-3. **`luna-send` is non-functional from the SSH shell** — it produces `rc=0` with **zero bytes on stdout and stderr**, and never appears on the LS2 bus (confirmed with `ls-monitor`). All LS2 method calls therefore had to be replaced by filesystem evidence or by driving vendor binaries directly.
+3. **`luna-send` appeared non-functional from the SSH shell — but was not.** The earlier session recorded "rc=0 with zero bytes on stdout and stderr; never appears on the LS2 bus". That conclusion was wrong. The actual symptom was a **stdin / heredoc artifact**: every call in that session was driven through `ssh host 'sh -s' <<'REMOTE' … REMOTE`, which leaves `luna-send`'s reply-pipe connected to the heredoc's stdin. The heredoc closes at EOF before the bus reply arrives, so `luna-send` exits cleanly with **zero bytes on stdout/stderr**, and the call appears to silently succeed. **LS2 was reachable the whole time.** With `</dev/null` appended to every call both `luna-send` and `ls-monitor` work normally; see the matrix in §0.1 Errata below. All LS2 method calls in this report were nevertheless replaced by filesystem evidence or by driving vendor binaries directly — that methodology was conservative-but-wrong about *why* it was conservative (it wasn't avoiding a broken bus; it was working around a session-side stdin bug).
 4. **No `tcpdump` on the TV** (and not available via `opkg`), so network capture had to come from the Mac.
 5. **`ffmpeg` on the Mac is broken** — ABI mismatch: ffmpeg 8.1 links `libx265.215.dylib`, x265 4.2 ships `libx265.216.dylib`, and the symbol `_x265_api_get_215` no longer exists. MP4 encoding was therefore done natively with **Swift + AVFoundation**.
 6. **`analyser.py` initially counted the Mac's own traffic** (tcpdump on `en0` sees everything), producing wildly wrong volume figures. Always pre-filter: `tcpdump -r cap.pcap -w tv.pcap 'host 10.0.0.34'`.
@@ -1462,7 +1495,8 @@ Documented because they materially affected results, and because several were su
 | ARP spoof sent to `<mac>` | Poisoned the entire LAN, not just the target pair | unicast to each target's real MAC |
 | `cksum` assumed present on the TV | A missing binary made "0 changes" look like a real measurement (false negative on the framebuffer refresh rate) | detected the missing tool and switched to `md5sum` |
 | `analyser.py` counted all `en0` traffic | Reported ~2.4 GB and "154 GB/month" — actually the Mac's own traffic | always pre-filter with `tcpdump … 'host 10.0.0.34'` |
-| `luna-send -m <service>` misuse | `-m` **registers** a service name, producing a misleading "name already exists" error | avoided luna entirely where possible |
+| `luna-send -m <service>` misuse | `-m` **registers** a service name, producing a misleading "name already exists" error | never use `-m`; always end the call with `</dev/null` (see next row) |
+| **`luna-send` stdin / heredoc trap** | The bus reply comes on a pipe fed from STDIN. If STDIN gets EOF before the reply arrives (any `ssh … 'sh -s' <<'REMOTE'` heredoc, any piped parent), `luna-send` exits `rc=0` with **zero bytes on stdout/stderr** — the call looks like it silently succeeded. This was mis-diagnosed as "luna-send is broken on the TV" and "LS2 is unreachable"; both were wrong. | always end `luna-send` with `</dev/null`; verify with `luna-send -i -n 1 -f luna://com.webos.notification/createToast '{"message":"x","sourceId":"com.webos.surfacemanager"}' </dev/null` (returns `toastId:…` on success). See §0.1. |
 | Not watching the TV's `/tmp` capacity | Filled the 713 MB RAM disk to 100% during a 120-frame harvest | cleaned up; streamed frames off the device instead of storing there |
 
 ---
@@ -1485,9 +1519,9 @@ Documented because they materially affected results, and because several were su
 7. **Residential-proxy apps in the webOS store.** Not tested.
 8. **Forced arbitration / terms text.** We found the technical consent store but did not read or compare
    the legal documents.
-9. **`blendedCapture`.** We never invoked `DisplayCapture::blendedCapture()` (blocked by the broken
-   `luna-send` and the `videoMuteState` permission gate); we approximated it by compositing the two planes
-   ourselves.
+9. **`blendedCapture`.** We never invoked `DisplayCapture::blendedCapture()`. The `videoMuteState`
+   permission gate was the only obstacle; `luna-send` itself works (see §0.1). We approximated
+   it by compositing the two planes ourselves.
 10. **CDP → device escape.** Whether `--no-sandbox` renderers plus DevTools can be leveraged beyond the
     web-app context was not investigated.
 11. **`marker2.konograma.com`.** Unidentified ~50-second TLS beacon. Needs a look.
@@ -2686,8 +2720,8 @@ methods are protected**. If LS2 treats "no declared API permissions" permissivel
 holding `"all"` — and there are 150 such clients, including the TV's browser (Part 2, F21) — could
 call `com.webos.service.iotclient.req` directly and feed it cloud-shaped commands, i.e. synthesise
 key presses and drive the F36 handlers **without root**. I am recording this as an **unresolved
-gap, not a finding**: I could not test it (`luna-send` does not reach the bus from our shell, and
-testing would require injecting input into a device in use).
+gap, not a finding**: the bus is reachable now (see §0.1) so this **is** testable; it has not been
+tested only because it means injecting synthetic input into a device in use.
 
 **Recommended follow-up:** enumerate whether `iotclient.req` methods are callable by a `"all"`
 client. If they are, that is a genuine app→remote-control path on a stock TV, and it would move

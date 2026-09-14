@@ -84,6 +84,7 @@ After install, no hardening is applied yet — pick your modules and re-run with
 - [Module table](#module-table)
 - [How it works (the four techniques)](#how-it-works-the-four-techniques)
 - [Install (on the TV)](#install-on-the-tv)
+- [Send a notification to the TV](#send-a-notification-to-the-tv)
 - [`oyg list`](#oyg-list)
 - [Warn-on-risk / opt-in flags](#warn-on-risk--opt-in-flags)
 - [What this CANNOT do on this device](#what-this-cannot-do-on-this-device)
@@ -238,6 +239,48 @@ sh uninstall.sh
 
 (or `/var/lib/own-your-glass/oyg restore` if you want to keep the
 tool installed but undo the hardening.)
+
+---
+
+## Send a notification to the TV
+
+`scripts/notify.sh` posts a native webOS toast (the small banner the TV
+itself uses for "Firmware update available", "Connected to Wi-Fi…", etc.)
+so it renders over any screen and any app — unlike the CDP DOM overlay
+that `Runtime.evaluate` gives you inside a web app's tab.
+
+```sh
+# From your computer (uses TV_HOST / the ssh alias; default TV_USER=root, TV_PORT=22):
+TV_HOST=lgtv scripts/notify.sh -m "Now you own your glass!"
+TV_HOST=lgtv scripts/notify.sh -m "auto-closes in 5s" -t 5
+TV_HOST=lgtv scripts/notify.sh -m "tick" -r 3 -g 2   # 3 toasts, 2s apart
+TV_HOST=lgtv scripts/notify.sh -C                    # close the last one
+
+# From the TV itself (luna-send is in /usr/bin; no TV_HOST needed):
+scripts/notify.sh -m "Done."
+```
+
+Mode autodetects: if `luna-send` is in `PATH` the script runs locally
+on the TV; otherwise it drives `luna-send` over ssh. Mixing the two
+(e.g. `TV_HOST` set while `luna-send` is on PATH) is an error.
+
+**The `</dev/null` gotcha (load-bearing).** `luna-send` reads the bus
+reply on a pipe fed from STDIN; if STDIN closes before the reply
+arrives the call silently returns zero bytes and looks like a success.
+Every call in `notify.sh` ends with `</dev/null` for that reason — do
+not remove it. Verify with:
+
+```sh
+TV_HOST=lgtv scripts/notify.sh --selftest    # bus reachability tripwire
+```
+
+`--selftest` calls `getServiceAPIVersions` and reports FAIL (with the
+reproduction matrix) if the bus returned zero bytes — that was the bug
+that produced two false findings ("luna-send broken", "LS2 unreachable")
+in the verification report. See `docs/VERIFICATION-REPORT.md` §0.1.
+
+This is a native system toast (it renders over any screen) as opposed
+to the CDP DOM overlay that lives inside a web app's tab.
 
 ---
 
@@ -921,6 +964,7 @@ own-your-glass/
 │   ├── blocklist-oyg.txt           operator-curated SAFE/STRICT sections
 │   └── blocklist-upstream-safe.txt CC BY 4.0 snapshot of upstream SAFE list
 ├── scripts/refresh-blocklist.sh    re-fetch upstream (off-device only)
+├── scripts/notify.sh              send a native webOS toast to the TV (on-device or via ssh)
 └── docs/FINDINGS.md           finding → countermeasure → effectiveness table
 ```
 
