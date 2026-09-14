@@ -445,7 +445,7 @@ function cmdFor(act, dir) {
 }
 function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 
-var busy = false, poller = null;
+var busy = false, poller = null, ticker = null;
 function run(act) {
   if (busy) return;
   busy = true;
@@ -460,12 +460,22 @@ function run(act) {
             phase: (act === "apply" ? "Installing and hardening" : labelOf(act)),
             finished: false, ok: false };
     paintProgress();
-    exec(": > " + ALOG + "; nohup sh -c " + sq(cmd + " >> " + ALOG + " 2>&1; echo @@EXIT:$? >> " + ALOG) + " &", function () {
-      if (poller) clearInterval(poller);
-      poller = setInterval(function () { follow(); paintProgress(); }, 900);
-      setInterval(paintProgress, 1000);
+    /* The & must background the nohup itself. Writing
+       ": > LOG; nohup sh -c '...' >> LOG 2>&1; echo @@EXIT:$? >> LOG &"
+       backgrounds only the echo, so the shell WAITS for the job and
+       child_process.exec does not call back until it finishes — which
+       left the console frozen on the command line and the timer at 0s. */
+    if (poller) clearInterval(poller);
+    if (ticker) clearInterval(ticker);
+    poller = setInterval(function () { follow(); paintProgress(); }, 900);
+    ticker = setInterval(paintProgress, 1000);
+    exec(": > " + ALOG + "; nohup sh -c " + sq(cmd + " >> " + ALOG + " 2>&1; echo @@EXIT:$? >> " + ALOG) +
+         " >/dev/null 2>&1 </dev/null &", function () {
+      follow();
       var ms = (act === "apply" || act === "revert-all") ? 300000 : 25000;
-      setTimeout(function () { clearInterval(poller); poller = null; busy = false; loadStatus(); }, ms);
+      setTimeout(function () { clearInterval(poller); poller = null;
+        if (ticker) { clearInterval(ticker); ticker = null; }
+        busy = false; loadStatus(); }, ms);
     });
   });
 }
