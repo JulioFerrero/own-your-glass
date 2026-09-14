@@ -269,6 +269,26 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         done <"\$DEBLOAT_KILL_LIST"
     fi
 
+    # Variant C persistence: connmand must come up with --nodnsproxy or its
+    # proxy re-takes 127.0.0.1:53 and the sink cannot bind. The launcher
+    # bind-mount does not survive reboot, so re-apply it here — at boot a
+    # connman restart is safe (nothing uses the network yet, and the wifi
+    # re-association has taken 7-27s in every observed restart).
+    if [ "\$(cat $OYG_DST/dns.bind 2>/dev/null)" = "127.0.0.1" ] \
+        && [ -x $OYG_DST/connman.sh.patched ] \
+        && ! awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
+        echo "[boot-hook] C: mounting patched connman launcher (-r)"
+        mount --bind $OYG_DST/connman.sh.patched /etc/systemd/system/scripts/connman.sh \
+            && systemctl daemon-reload \
+            && systemctl restart connman
+        n=0
+        while [ \$n -lt 90 ]; do
+            ip -4 addr show wlan0 2>/dev/null | grep -q 'inet ' && break
+            sleep 1; n=\$((n + 1))
+        done
+        echo "[boot-hook] C: connman restarted (wlan0 wait \${n}s)"
+    fi
+
     # Network re-apply: only when (a) the user previously hardened the
     # network module (state has network.applied=1), AND (b) the network is
     # up. We re-derive the opt-in flags from state so we don't need them in

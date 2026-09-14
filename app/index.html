@@ -463,9 +463,9 @@ function appDir() {
 function cmdFor(act, dir) {
   var T = dir + "/toolkit";
   return {
-    "apply":       "sh " + T + "/install.sh && sh " + ROOT + "/oyg harden",
+    "apply":       "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + T + "/install.sh && OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + ROOT + "/oyg harden",
     "check":       "sh " + ROOT + "/scripts/status-fast.sh",
-    "revert-all":  "sh " + ROOT + "/oyg restore",
+    "revert-all":  "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + ROOT + "/oyg restore",
     "dns-on":      "sh " + T + "/scripts/dns.sh start",
     "dns-off":     "sh " + T + "/scripts/dns.sh stop",
     "restore-net": "sh " + T + "/scripts/recover-network.sh"
@@ -473,9 +473,20 @@ function cmdFor(act, dir) {
 }
 function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 
-var busy = false, poller = null, ticker = null;
+var busy = false, poller = null, ticker = null, busyUntil = 0, queued = null;
+function paintQueued() {
+  var v = document.getElementById("verdict");
+  if (!busy || !queued) return;
+  v.innerHTML = "<b>queued</b> " + labelOf(queued) + " — starts when this finishes";
+}
+setInterval(function () {
+  if (busy && busyUntil && Date.now() > busyUntil) finishJob(false);
+}, 2000);
 function run(act) {
-  if (busy) return;
+  /* Buttons never go fully dead: while a job runs the other actions are
+     deferred rather than dropped, and everything unlocks as soon as the
+     job's exit marker appears — not on a fixed timer. */
+  if (busy) { queued = act; paintQueued(); return; }
   busy = true;
   var v = document.getElementById("verdict");
   v.className = "verdict busy";
@@ -500,12 +511,19 @@ function run(act) {
     exec(": > " + ALOG + "; nohup sh -c " + sq(cmd + " >> " + ALOG + " 2>&1; echo @@EXIT:$? >> " + ALOG) +
          " >/dev/null 2>&1 </dev/null &", function () {
       follow();
-      var ms = (act === "apply" || act === "revert-all") ? 300000 : 25000;
-      setTimeout(function () { clearInterval(poller); poller = null;
-        if (ticker) { clearInterval(ticker); ticker = null; }
-        busy = false; loadStatus(); }, ms);
+      /* Watch the log for @@EXIT so the UI unlocks the moment the job is
+         done; the timer is only a backstop in case the marker never comes. */
+      busyUntil = Date.now() + ((act === "apply" || act === "revert-all") ? 300000 : 60000);
     });
   });
+}
+function finishJob(ok) {
+  if (!busy) return;
+  busy = false;
+  if (poller) { clearInterval(poller); poller = null; }
+  if (ticker) { clearInterval(ticker); ticker = null; }
+  loadStatus();
+  if (queued) { var q = queued; queued = null; paintQueued(); run(q); }
 }
 function follow() {
   exec("tail -c 40000 " + ALOG + " 2>/dev/null", function (e, r) {
@@ -522,6 +540,12 @@ function follow() {
       appendLines(text, false);
     }
     logText = text;
+    if (/@@EXIT:(\d+)/.test(text)) {
+      job && (job.finished = true, job.ok = RegExp.$1 === "0");
+      paintProgress();
+      finishJob(RegExp.$1 === "0");
+      return;
+    }
     if (job && delta) {
       job.lastLineAt = Date.now();
       var heads = text.match(/^==\s*([a-z]+):\s*harden\s*==$/gm);
