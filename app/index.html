@@ -5,62 +5,79 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>own-your-glass</title>
 <style>
-  :root { --bg:#0b0f14; --fg:#e6edf3; --dim:#8b949e; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --line:#1f2a37; }
-  * { box-sizing: border-box; }
-  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
-    font:20px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
-  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex;
-    align-items:center; gap:16px; }
-  header h1 { font-size:26px; margin:0; font-weight:600; letter-spacing:.3px; }
-  header .tag { color:var(--dim); font-size:16px; }
-  main { display:grid; grid-template-columns: 1fr 1fr; gap:0; height:calc(100% - 70px); }
-  .col { padding:18px 28px; overflow:auto; }
-  .col.left { border-right:1px solid var(--line); }
-  h2 { font-size:15px; text-transform:uppercase; letter-spacing:1.2px; color:var(--dim);
-    margin:0 0 10px; font-weight:600; }
-  pre.status { margin:0 0 22px; font:15px/1.5 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
-  .ok   { color:var(--ok); }
-  .bad  { color:var(--bad); font-weight:700; }
-  .warn { color:var(--warn); }
-  .dim  { color:var(--dim); }
-  .btns { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  button { font:600 19px/1 inherit; color:var(--fg); background:#141b24;
-    border:1px solid var(--line); border-radius:10px; padding:16px 14px; cursor:pointer;
-    transition:border-color .12s, background .12s; }
-  button:hover, button:focus { background:#1b2531; border-color:#3b82f6; outline:none; }
-  button.danger { border-color:#7f1d1d; color:#fecaca; }
-  button.danger:hover, button.danger:focus { background:#2a1414; border-color:var(--bad); }
-  button.wide { grid-column:1 / -1; }
-  #log { margin:0; height:calc(100% - 190px); overflow:auto; background:#0e141b;
-    border:1px solid var(--line); border-radius:10px; padding:12px;
-    font:14px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; color:#c9d1d9; }
-  .spin { display:none; color:var(--warn); font-size:15px; margin-bottom:8px; }
-  .busy .spin { display:block; }
+  :root{
+    --bg:#070b10; --panel:#0d141c; --panel2:#111a24; --line:#1e2a38;
+    --fg:#e8eef5; --dim:#8fa3b8; --ok:#3ddc84; --bad:#ff5c5c; --warn:#ffb020; --focus:#4da3ff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; background:var(--bg); color:var(--fg); overflow:hidden;
+    font:22px/1.4 "Helvetica Neue",Helvetica,Arial,sans-serif; -webkit-user-select:none;}
+
+  header{display:flex; align-items:center; gap:22px; padding:22px 34px;
+    border-bottom:2px solid var(--line); background:var(--panel);}
+  header h1{font-size:34px; font-weight:700; letter-spacing:.4px;}
+  header .sub{color:var(--dim); font-size:19px;}
+  #health{margin-left:auto; font-size:20px; font-weight:600; padding:8px 18px;
+    border-radius:24px; border:2px solid var(--line);}
+  #health.good{color:var(--ok); border-color:var(--ok);}
+  #health.bad{color:var(--bad); border-color:var(--bad);}
+  #health.busy{color:var(--warn); border-color:var(--warn);}
+
+  main{display:grid; grid-template-columns:1.15fr 1fr; height:calc(100% - 88px);}
+  .pane{padding:20px 34px; overflow:auto;}
+  .pane.left{border-right:2px solid var(--line);}
+  h2{font-size:15px; letter-spacing:2px; text-transform:uppercase; color:var(--dim);
+    margin-bottom:12px; font-weight:700;}
+
+  .row{display:flex; align-items:center; gap:14px; padding:13px 16px; border-radius:12px;
+    border:2px solid transparent; margin-bottom:6px;}
+  .row .dot{width:14px; height:14px; border-radius:50%; flex:0 0 auto; background:var(--dim);}
+  .row.ok .dot{background:var(--ok);} .row.fail .dot{background:var(--bad);}
+  .row.warn .dot{background:var(--warn);}
+  .row .name{font-size:21px; flex:1;}
+  .row .count{font-size:17px; color:var(--dim);}
+  .row.fail .count{color:var(--bad); font-weight:700;}
+  .row.sel{border-color:var(--focus); background:var(--panel2);}
+  .detail{font:16px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap;
+    color:#b9cadb; padding:10px 16px 16px 46px;}
+  .detail .ok{color:var(--ok);} .detail .fail{color:var(--bad); font-weight:700;}
+  .detail .warn{color:var(--warn);} .detail .na{color:var(--dim);}
+
+  .btns{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  button{font:600 21px/1 inherit; color:var(--fg); background:var(--panel2);
+    border:2px solid var(--line); border-radius:12px; padding:20px 16px; cursor:pointer;}
+  button.sel{border-color:var(--focus); background:#16283c;}
+  button.wide{grid-column:1/-1;}
+  button.danger{color:#ffd9d9; border-color:#5c1f1f;}
+  button.danger.sel{border-color:var(--bad); background:#2a1414;}
+
+  #log{margin-top:20px; height:calc(100% - 210px); overflow:auto; background:#05090d;
+    border:2px solid var(--line); border-radius:12px; padding:14px;
+    font:15px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; color:#aebccb;}
+  .hint{color:var(--dim); font-size:17px; margin-bottom:14px;}
 </style>
 </head>
 <body>
 <header>
   <h1>own-your-glass</h1>
-  <span class="tag">on-device control &mdash; works with no network</span>
+  <span class="sub">on-device control &mdash; works with no network</span>
+  <span id="health">loading</span>
 </header>
 
 <main>
-  <div class="col left">
-    <h2>Hardening status</h2>
-    <pre id="status" class="status dim">loading&hellip;</pre>
-    <h2>DNS sinkhole</h2>
-    <pre id="dns" class="status dim">loading&hellip;</pre>
+  <div class="pane left">
+    <h2>Modules</h2>
+    <div id="mods"><div class="hint">loading&hellip;</div></div>
   </div>
-
-  <div class="col right">
+  <div class="pane right">
     <h2>Actions</h2>
-    <div class="spin">running&hellip; (the log below updates live)</div>
+    <div class="hint">Remote: &#9650;&#9660; move &nbsp;&middot;&nbsp; OK select &nbsp;&middot;&nbsp; colour keys = shortcuts</div>
     <div class="btns">
-      <button data-act="check">Check</button>
-      <button data-act="harden">Harden</button>
+      <button data-act="check"   data-short="blue">Check</button>
+      <button data-act="harden"  data-short="green">Harden all</button>
       <button data-act="dns-on">DNS sink ON</button>
       <button data-act="dns-off">DNS sink OFF</button>
-      <button data-act="restore-net" class="danger wide">RESTORE NETWORK</button>
+      <button data-act="restore-net" class="danger wide" data-short="red">RESTORE NETWORK</button>
       <button data-act="reboot" class="danger wide">Reboot TV</button>
     </div>
     <h2 style="margin-top:22px">Log</h2>
@@ -69,116 +86,186 @@
 </main>
 
 <script>
-var SVC   = "luna://org.webosbrew.hbchannel.service";
-var ROOT  = "/var/lib/own-your-glass";
-var ALOG  = "/tmp/oyg-app.log";
-var busy  = false, poller = null;
+var SVC  = "luna://org.webosbrew.hbchannel.service";
+var ROOT = "/var/lib/own-your-glass";
+var ALOG = "/tmp/oyg-app.log";
 
-function ls2(uri, method, parameters, cb) {
-  // 1. high-level bridge — only exists if the app bundles webOS.js (we do not).
+// ---- luna, done properly ---------------------------------------------------
+// PalmServiceBridge objects MUST be kept referenced until their callback
+// fires: if the only reference is a local var the GC can collect it and the
+// callback never runs — which is what left the panel on "loading…" forever.
+var live = [];
+function ls2(uri, method, params, cb) {
+  var done = function (err, res) {
+    var i = live.indexOf(b);
+    if (i >= 0) live.splice(i, 1);
+    cb(err, res);
+  };
   if (window.webOS && webOS.service && webOS.service.request) {
+    var b0 = null;
     webOS.service.request(uri, {
-      method: method,
-      parameters: parameters || {},
+      method: method, parameters: params || {},
       onSuccess: function (r) { cb(null, r || {}); },
-      onFailure: function (e) { cb((e && e.errorText) || "luna call failed", null); }
+      onFailure: function (e) { cb((e && e.errorText) || "luna failure", null); }
     });
     return;
   }
-  // 2. low-level bridge — this is the one WebAppMgr injects into web apps.
-  if (window.PalmServiceBridge) {
-    var b = new PalmServiceBridge();
-    b.onservicecallback = function (msg) {
-      var o;
-      try { o = JSON.parse(msg); } catch (err) { o = { errorText: String(msg) }; }
-      if (o && o.returnValue === false && o.errorText) cb(o.errorText, null);
-      else cb(null, o || {});
-      b = null;
-    };
-    try {
-      b.call(uri + "/" + method, JSON.stringify(parameters || {}));
-    } catch (err) {
-      cb("PalmServiceBridge.call failed: " + err, null);
-    }
-    return;
-  }
-  cb("no luna bridge (webOS.service and PalmServiceBridge both missing)", null);
+  if (!window.PalmServiceBridge) { cb("no luna bridge available", null); return; }
+  var b = new PalmServiceBridge();
+  live.push(b);
+  b.onservicecallback = function (msg) {
+    var o;
+    try { o = JSON.parse(msg); } catch (e) { o = { errorText: String(msg) }; }
+    if (o && o.returnValue === false && o.errorText) done(o.errorText, null);
+    else done(null, o || {});
+  };
+  try { b.call(uri + "/" + method, JSON.stringify(params || {})); }
+  catch (e) { done("bridge call failed: " + e, null); }
 }
+function exec(command, cb) { ls2(SVC, "exec", { command: command }, cb); }
+function out(r) { return (r && r.stdoutString) || ""; }
 
-function exec(command, cb) {
-  ls2(SVC, "exec", { command: command }, cb);
-}
-function stdout(r) { return (r && r.stdoutString) ? r.stdoutString : ""; }
-function stderr(r) { return (r && r.stderrString) ? r.stderrString : ""; }
-
-function colourise(text) {
-  return text.split("\n").map(function (l) {
-    var esc = l.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-    if (/^\s*(OK|\[.*\]\s*OK)\b/.test(l) || /^\s*OK\s/.test(l)) return '<span class="ok">' + esc + "</span>";
-    if (/^\s*(FAIL|ERR)\b/.test(l) || /^\s*FAIL\s/.test(l))     return '<span class="bad">' + esc + "</span>";
-    if (/^\s*(WARN|PARTIAL)\b/.test(l))                          return '<span class="warn">' + esc + "</span>";
-    if (/^\[/.test(l) || /^==/.test(l))                          return '<span class="dim">' + esc + "</span>";
-    return esc;
-  }).join("\n");
-}
-
-function refresh() {
-  exec("sh " + ROOT + "/oyg status 2>&1", function (e, r) {
-    var el = document.getElementById("status");
-    if (e) { el.innerHTML = '<span class="bad">' + e + "</span>"; return; }
-    el.innerHTML = colourise(stdout(r) || "(no output)");
+// serialise shell commands: one at a time, so nothing overlaps or races
+var chain = Promise.resolve();
+function sh(command, cb) {
+  chain = chain.then(function () {
+    return new Promise(function (res) { exec(command, function (e, r) { cb(e, r); res(); }); });
   });
-  exec("sh " + ROOT + "/scripts/dns.sh status 2>&1", function (e, r) {
-    var el = document.getElementById("dns");
-    el.innerHTML = e ? '<span class="bad">' + e + "</span>" : colourise(stdout(r) || "(no output)");
+  return chain;
+}
+
+// ---- status ----------------------------------------------------------------
+var GROUPS = { SYSTEM:"System", NETWORK:"Network blocking", DNS:"DNS sinkhole",
+  MICS:"Microphones", VOICE:"Voice", DEBLOAT:"Debloat", APPS:"Hidden apps",
+  POLICY:"Consents / policy" };
+var order = [], data = {}, sel = 0;
+
+function parseFast(text) {
+  order = []; data = {};
+  text.split("\n").forEach(function (l) {
+    var p = l.split("|");
+    if (p.length < 3) return;
+    var g = p[0], lvl = p[1], txt = p.slice(2).join("|");
+    if (lvl === "HEADER") { data[g] = { title: txt, lines: [] }; order.push(g); return; }
+    if (!data[g]) { data[g] = { title: GROUPS[g] || g, lines: [] }; order.push(g); }
+    data[g].lines.push({ level: lvl, text: txt });
   });
 }
 
-function log(text) { document.getElementById("log").textContent = text; }
+function levelOf(g) {
+  var ls = data[g].lines;
+  if (ls.some(function (x) { return x.level === "FAIL"; })) return "fail";
+  if (ls.some(function (x) { return x.level === "WARN"; })) return "warn";
+  return "ok";
+}
 
-function follow() {
-  exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) {
-    if (!e) log(stdout(r) || "(empty)");
-    var el = document.getElementById("log"); el.scrollTop = el.scrollHeight;
+function render() {
+  var mods = document.getElementById("mods");
+  var ok = 0, bad = 0;
+  order.forEach(function (g) {
+    var lv = levelOf(g);
+    if (lv === "fail") bad++; else ok++;
   });
+  document.getElementById("health").textContent = order.length + " modules · " + ok + " OK · " + bad + " FAIL";
+  document.getElementById("health").className = bad ? "bad" : "good";
+
+  mods.innerHTML = order.map(function (g, i) {
+    var lv = levelOf(g);
+    var fails = data[g].lines.filter(function (x) { return x.level === "FAIL"; }).length;
+    var badge = (lv === "fail") ? (fails + " FAIL") : (data[g].lines.length + " OK");
+    var det = (i === sel) ? '<div class="detail">' + data[g].lines.map(function (x) {
+      var cls = x.level === "FAIL" ? "fail" : x.level === "WARN" ? "warn"
+              : x.level === "NA" ? "na" : "ok";
+      return '<span class="' + cls + '">' + esc(x.level + "  " + x.text) + "</span>";
+    }).join("\n") + "</div>" : "";
+    return '<div class="row ' + lv + (i === sel ? " sel" : "") + '" data-i="' + i + '">' +
+             '<span class="dot"></span><span class="name">' + esc(data[g].title) + "</span>" +
+             '<span class="count">' + badge + "</span></div>" + det;
+  }).join("");
+}
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+function loadStatus(msg) {
+  if (msg) log(msg);
+  sh("sh " + ROOT + "/scripts/status-fast.sh 2>&1", function (e, r) {
+    if (e) { log("[status-fast error] " + e); return; }
+    parseFast(out(r));
+    if (sel >= order.length) sel = 0;
+    render();
+  });
+  sh("sh " + ROOT + "/scripts/dns.sh status 2>&1", function () { /* kept for the log */ });
 }
 
-function setBusy(on) {
-  busy = on;
-  document.body.classList.toggle("busy", on);
-  if (poller) { clearInterval(poller); poller = null; }
-  if (on) poller = setInterval(follow, 1500);
-}
-
+// ---- actions ---------------------------------------------------------------
 var ACTIONS = {
-  "check":      ROOT + "/oyg status",
-  "harden":     ROOT + "/oyg harden",
-  "dns-on":     ROOT + "/scripts/dns.sh start",
-  "dns-off":    ROOT + "/scripts/dns.sh stop",
-  "restore-net":ROOT + "/scripts/recover-network.sh",
-  "reboot":     "reboot"
+  "check":       ROOT + "/scripts/status-fast.sh",
+  "harden":      ROOT + "/oyg harden",
+  "dns-on":      ROOT + "/scripts/dns.sh start",
+  "dns-off":     ROOT + "/scripts/dns.sh stop",
+  "restore-net": ROOT + "/scripts/recover-network.sh",
+  "reboot":      "reboot"
 };
+var busy = false, poller = null;
+function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+function log(t) { var el = document.getElementById("log"); el.textContent = t; el.scrollTop = el.scrollHeight; }
 
 function run(act) {
-  if (busy) return;
-  var cmd = ACTIONS[act];
-  if (!cmd) return;
-  log("$ " + cmd + "\n");
-  setBusy(true);
-  // Detached: the luna call returns immediately, the log pane follows the file.
-  exec(": > " + ALOG + "; nohup sh -c " + sq(cmd) + " >> " + ALOG + " 2>&1 &", function () {
-    setTimeout(function () { setBusy(false); refresh(); }, 9000);
+  if (busy || !ACTIONS[act]) return;
+  busy = true;
+  document.getElementById("health").className = "busy";
+  document.getElementById("health").textContent = "running " + act + "…";
+  log("$ " + ACTIONS[act] + "\n");
+  exec(": > " + ALOG + "; nohup sh -c " + sq(ACTIONS[act]) + " >> " + ALOG + " 2>&1 &", function () {
+    if (poller) clearInterval(poller);
+    poller = setInterval(function () { follow(); }, 1500);
+    setTimeout(function () {
+      clearInterval(poller); poller = null; busy = false;
+      loadStatus();
+    }, 12000);
   });
 }
+function follow() {
+  exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) { if (!e) log(out(r) || "(empty)"); });
+}
 
-function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+// ---- remote control --------------------------------------------------------
+var focusables = [];
+function refreshFocusables() {
+  focusables = [].slice.call(document.querySelectorAll("button[data-act]"));
+}
+function paintFocus() {
+  focusables.forEach(function (b, i) { b.classList.toggle("sel", i === focusIdx); });
+  if (focusables[focusIdx]) focusables[focusIdx].scrollIntoView({ block: "nearest" });
+}
+var focusIdx = 0;
 
-Array.prototype.forEach.call(document.querySelectorAll("button[data-act]"), function (b) {
-  b.addEventListener("click", function () { run(b.getAttribute("data-act")); });
+function move(d) {
+  if (!focusables.length) return;
+  focusIdx = (focusIdx + d + focusables.length) % focusables.length;
+  paintFocus();
+}
+function selectModule(d) {
+  if (!order.length) return;
+  sel = (sel + d + order.length) % order.length;
+  render();
+}
+
+document.addEventListener("keydown", function (ev) {
+  var k = ev.keyCode;
+  if (k === 38) { move(-1); ev.preventDefault(); }          // up
+  else if (k === 40) { move(1); ev.preventDefault(); }       // down
+  else if (k === 37) { selectModule(-1); ev.preventDefault(); } // left  -> modules
+  else if (k === 39) { selectModule(1); ev.preventDefault(); }  // right -> modules
+  else if (k === 13) { if (focusables[focusIdx]) run(focusables[focusIdx].getAttribute("data-act")); ev.preventDefault(); }
+  else if (k === 403 || k === 405) { run("restore-net"); ev.preventDefault(); } // red / yellow
+  else if (k === 404) { run("harden"); ev.preventDefault(); }                    // green
+  else if (k === 406) { run("check"); ev.preventDefault(); }                     // blue
 });
 
-refresh();
-setInterval(refresh, 10000);
+refreshFocusables();
+paintFocus();
+loadStatus("starting…");
+setInterval(function () { if (!busy) loadStatus(); }, 20000);
 </script>
 </body>
 </html>
