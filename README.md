@@ -25,8 +25,41 @@ Written in POSIX `sh` so it runs on the BusyBox shell that ships on the device.
 - **Ad / telemetry / ACR domains + ThinQ cloud + firmware-update servers**: blocked, dual-stack (IPv4 `0.0.0.0` **and** IPv6 `::1` per domain, because an IPv4-only sinkhole let AAAA lookups fall through to DNS).
 - **LG consents**: force-declined and re-declined every boot (covers the system silently re-accepting them after a component update).
 - **Ad / ACR / overlay / SDK-example apps**: hidden from the launcher via the vendor's own `blockedSystemAppList/<REGION>.json`.
-- **Unused feature services**: stopped; `ss.gateway` runaway CPU (~6 m 09 s of accumulated CPU and climbing) eliminated.
-- **telnetd** (unauthenticated root on the LAN): disabled.
+- **Unused feature services**: stopped — including the DIAL casting-discovery server, which was consuming CPU continuously on an idle TV.
+- **telnetd** (unauthenticated root on the LAN): disabled via `/var/luna/preferences/webosbrew_telnet_disabled`, which makes webOSbrew's `startup.sh` skip the `telnetd -l /bin/sh` launch.
+
+---
+
+## Rooting your TV
+
+`oyg` requires root. Rootability of a webOS TV is **firmware-version-specific** — what works on one build may be patched on the next. This project does not ship exploit code; find one that matches your model + firmware on the community sites below.
+
+- **Compatibility checker:** <https://cani.rootmy.tv> (model + firmware → supported chains).
+- **Community guide:** <https://www.webosbrew.org/rooting/> — the official rooting walk-through.
+- **RootMyTV:** <https://rootmy.tv> — the original `GetMeNow` exploit. Patched on many recent models.
+- **DejaVuln autoroot:** <https://github.com/throwaway96/dejavuln-autoroot> — webOS 3.5+. Other common chains: `faultmanager`, `GetMeNow`.
+- **Research / kernel work:** <https://openlgtv.github.io>.
+
+**Before you start**, uninstall LG's **Developer Mode** app if it is present. It conflicts with the rooting chain, and its functionality is replaced by Homebrew Channel once you are rooted.
+
+**After rooting**, Homebrew Channel is installed automatically. In Homebrew Channel → Settings, **enable the SSH server**. **Leave Telnet off** — `telnetd` ships as an unauthenticated root shell on the LAN, and the `policy` module below maintains the flag that keeps it off.
+
+**First login**, from your computer:
+
+```sh
+ssh root@<tv-ip>                       # default password: alpine
+ssh-copy-id -i ~/.ssh/id_ed25519.pub root@<tv-ip>
+```
+
+The key lands at `/home/root/.ssh/authorized_keys` on the TV. Once that file exists, Homebrew Channel stops provisioning the `alpine` default password on subsequent boots, so do this immediately.
+
+**Never flash the kernel, rootfs, or TVService.** See <https://rootmy.tv/warning>. `oyg` never writes a system partition; it only changes file modes on writable paths, bind-mounts, `ip route` entries, and service state.
+
+**Warnings:**
+
+- Rooting affects your warranty. That is between you and LG.
+- A **factory reset can lose root** and may make re-rooting impossible on that unit — re-check `cani.rootmy.tv` for your firmware before doing either.
+- The webOSbrew update-blocker flag (touched by the `policy` module) protects your root by sinkholing LG's update servers. It also stops LG kernel security patches from arriving. Pick your trade-off.
 
 ---
 
@@ -45,6 +78,7 @@ After install, no hardening is applied yet — pick your modules and re-run with
 ## Contents
 
 - [What it actually does](#what-it-actually-does)
+- [Rooting your TV](#rooting-your-tv)
 - [Quick start](#quick-start)
 - [Threat model](#threat-model)
 - [Module table](#module-table)
@@ -94,7 +128,7 @@ this tool does not touch.
 | `voice` | Magic Remote mic pipeline: `chmod 000` + bind-null on `voiceinput_hidraw`, `voiceinput`, `voiceconductor`. `/dev/hidraw0` deliberately untouched (carries every other remote button). | none — safe by default | yes |
 | `logs` | Periodic clear of `/tmp/var/log/messages` and `/tmp/app.voice.log` (damage limitation). | none — safe by default | yes (stop the watcher) |
 | `remoteone` | Verifies `/mnt/lg/cmn_data/remoteDebug/` is absent; optionally tightens `cmn_data`. | `OYG_AGGRESSIVE=1` for the chmod step | yes |
-| `policy` | Touches `/var/luna/preferences/webosbrew_block_updates` (webOSbrew fallback hosts-bind); force-declines LG consents in `/var/luna/preferences/eula` and re-declines every boot. | `OYG_TOS_IDS="S_VNG S_TAG"` allow-list form (default = decline ALL) | yes (`restore` from `$OYG_BACKUP/eula.orig`) |
+| `policy` | Touches `/var/luna/preferences/webosbrew_block_updates` (webOSbrew fallback hosts-bind) and `webosbrew_telnet_disabled` (suppresses telnetd — unauthenticated root on the LAN); force-declines LG consents in `/var/luna/preferences/eula` and re-declines every boot. | `OYG_TOS_IDS="S_VNG S_TAG"` allow-list form (default = decline ALL) | yes (`restore` from `$OYG_BACKUP/eula.orig`) |
 | `apps` | Hides a curated list (48 IDs) from the launcher via the vendor's own `blockedSystemAppList/<REGION>.json`. Ad machinery, remote-support tile, SDK examples, demo apps. Skips IDs absent on the device. | none — safe by default | yes (restore the original file from backup) |
 | `debloat` | Stops + bind-nulls unused feature services: `mycar`, `familycare`, `buddyconnector`, `alwaysready`, `ai-inference-manager`, `avahi-daemon`, `avahi-adaptor`, `ruleengine`; bind-nulls `/usr/bin/com.webos.app.voice`, `ss.gateway` (DIAL discovery), `iconnectivity`, `sdx`, and other luna-launched binaries if present. | `OYG_DEBLOAT=1` (opt-in — the only default-safe module that isn't on by default) | yes |
 | `network` | Three-layer mitigation: `/etc/hosts` bind-overlay (dual-stack IPv4+IPv6 sinkhole, always); blackhole public resolvers (always); per-IP blackhole (opt-in). Always blocks LG firmware/update servers. | `OYG_NETWORK_BLOCK=1` (without it, layer 1 + layer 2 still applied); `OYG_NETWORK_STRICT=1`; `OYG_NETWORK_IPBLOCK=1`; `OYG_DNS_OVERRIDE=1` | yes (`umount` + route delete) |
@@ -127,18 +161,50 @@ Everything in this toolkit is built from the same four low-level moves, because 
 
 ## Install (on the TV)
 
-Copy the repo to the device, then:
+Pick whichever path is easier. **(A)** runs entirely on the TV; **(B)** lets you review the repo on your computer first.
+
+**(A) One-liner — run ON the TV.** The TV's BusyBox + webOS userland ships `curl`, `wget`, `tar`, `gzip`, and `unzip`, and can reach GitHub over TLS. After rooting and installing your SSH key:
 
 ```sh
-sh install.sh
+ssh root@<tv-ip>
+curl -fsSL https://github.com/JulioFerrero/own-your-glass/archive/refs/heads/main.tar.gz \
+  | tar xz -C /tmp \
+  && sh /tmp/own-your-glass-main/install.sh
 ```
 
-That installs to:
+Tarballs from `archive/refs/heads/main.tar.gz` extract to `own-your-glass-main/` — use that exact path. If `curl` misbehaves, the same flow works with `wget`:
+
+```sh
+wget -qO- https://github.com/JulioFerrero/own-your-glass/archive/refs/heads/main.tar.gz \
+  | tar xz -C /tmp \
+  && sh /tmp/own-your-glass-main/install.sh
+```
+
+**(B) From your computer** — if you prefer to review the repo before running anything on the TV. The repo includes `scripts/deploy.sh` that wraps this for you (run `scripts/deploy.sh --help` for the env overrides):
+
+```sh
+git clone https://github.com/JulioFerrero/own-your-glass
+scp -r own-your-glass root@<tv-ip>:/tmp/
+ssh root@<tv-ip> 'sh /tmp/own-your-glass/install.sh'
+```
+
+Either path installs to:
 
 - `/var/lib/own-your-glass/`        — the toolkit root (state, backups, log, watchers)
 - `/var/lib/webosbrew/init.d/oyg`   — boot hook (re-applies safe modules; `run-parts` ignores dotfiles, so no `.sh` suffix)
 
-After install, no hardening is applied yet. Pick your modules:
+`install.sh` only copies files and drops the boot hook — **nothing is hardened until you run `oyg harden`** below.
+
+After install, inspect what is available, dry-run, apply, then verify:
+
+```sh
+ssh root@<tv-ip> '/var/lib/own-your-glass/oyg list'
+ssh root@<tv-ip> '/var/lib/own-your-glass/oyg harden --dry-run'   # review
+ssh root@<tv-ip> '/var/lib/own-your-glass/oyg harden'             # apply the safe set
+ssh root@<tv-ip> '/var/lib/own-your-glass/oyg verify'
+```
+
+Pick your modules (the rest of the flag set is unchanged from before):
 
 ```sh
 # Always safe, no flags:
@@ -190,7 +256,7 @@ logs        periodic clear of /tmp/var/log/messages and /tmp/app.voice.log (dama
 network     three-layer mitigation: /etc/hosts bind-overlay with dual-stack (IPv4 + IPv6 sinkhole) sinkhole (always); blackhole public resolvers (always); per-IP blackhole (opt-in OYG_NETWORK_IPBLOCK=1)
 perms       chmod webOSbrew hbchannel + Google Home runtime paths (opt-in, OYG_AGGRESSIVE=1)
 remoteone   verify /mnt/lg/cmn_data/remoteDebug/ absent; optionally tighten cmn_data (aggressive)
-policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind); force-decline LG consents in /var/luna/preferences/eula (decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported)
+policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported)
 ```
 
 Every action is idempotent and reversible. Every mutation is logged.
@@ -674,7 +740,7 @@ transcription occur.
 
 ## Consent + update-blocker neutralisation (the `policy` module)
 
-The `policy` module does two jobs, both applied at every boot
+The `policy` module does three jobs, all applied at every boot
 because the on-device state changes on its own without any user
 action.
 
@@ -698,6 +764,19 @@ not a replacement — but it covers us if our hook ever fails to run,
 because webOSbrew's own mechanism will still silently sinkhole the
 four update servers. Our blocklist already contains those four
 domains, so on this device both layers hold the line.
+
+### Job A2 — suppress `telnetd`
+
+`/var/luna/preferences/webosbrew_telnet_disabled` is a second
+one-line flag file. webOSbrew's own `/var/lib/webosbrew/startup.sh`
+checks for it and, when **present**, skips the line that launches
+`telnetd -l /bin/sh`. Without that line the telnet daemon never
+starts. That is the desired state — `telnetd -l /bin/sh` is an
+**unauthenticated root shell on the LAN**: no password prompt, no
+banner, no log; anyone on the same network who can reach the TV gets
+a root shell as soon as the daemon is up. SSH is how the operator
+manages the TV, so we deliberately do not touch
+`webosbrew_sshd_enabled`.
 
 ### Job B — force-decline LG consents at the source
 
@@ -764,16 +843,16 @@ features". Decline at your own risk.
 
 **Boot hook** — the `policy` module is in the boot hook
 (`/var/lib/webosbrew/init.d/oyg`) because the consent state must
-be re-enforced on every boot. `restore` removes the flag file and
-restores `$OYG_BACKUP/eula.orig` over the live file.
+be re-enforced on every boot. `restore` removes the two flag
+files and restores `$OYG_BACKUP/eula.orig` over the live file.
 
-**Effectiveness** — `OK` when both the flag file exists AND the
-EULA file has zero `"accepted":true` (default mode), or when the
-named allow-list entries are all `false` (allow-list mode). A
-non-zero `accepted:true` count after a successful harden means the
-system flipped an entry back between harden and status; re-running
-the module closes the gap, which is exactly why the boot hook does
-so on every boot.
+**Effectiveness** — `OK` when the two webOSbrew flag files both
+exist AND the EULA file has zero `"accepted":true` (default mode),
+or when the named allow-list entries are all `false` (allow-list
+mode). A non-zero `accepted:true` count after a successful harden
+means the system flipped an entry back between harden and status;
+re-running the module closes the gap, which is exactly why the boot
+hook does so on every boot.
 
 ---
 
@@ -873,9 +952,10 @@ At boot the hook:
    `blockedSystemAppList/<REGION>.json` because the application
    manager may rewrite that file on its own (see the `apps` module
    section below). The `policy` re-apply re-touches the webOSbrew
-   update-blocker flag and re-declines the LG consent entries in
-   `/var/luna/preferences/eula` (the system silently re-accepts
-   them on component updates; see `policy` module section below).
+   update-blocker AND telnet-disable flags and re-declines the LG
+   consent entries in `/var/luna/preferences/eula` (the system
+   silently re-accepts them on component updates; see `policy`
+   module section below).
 3. Reads `/var/lib/own-your-glass/services.stopped` (one unit per
    line) and `systemctl stop`s each entry, then reads
    `/var/lib/own-your-glass/services.kill` (one process name per
