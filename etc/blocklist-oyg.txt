@@ -99,6 +99,31 @@ dns.nextdns.io                   # NextDNS
 doh.dns.sb                       # DNS.SB
 doh.libredns.gr                  # LibreDNS
 
+# --- Ad-tech / ACR / analytics vendors, captured live on the wire ----------
+# Observed resolving AND connecting while the TV was in normal use (launcher,
+# apps, channel changes) via scripts/sniff.sh. None has any legitimate use on
+# a TV, so they belong in SAFE.
+alphonso.tv                      # ALPHONSO — the ACR vendor; acr.xml says ACRSolution="ALPHONSO"
+cdn-aas-campaigns.alphonso.tv    # Alphonso campaign CDN — the ACR ad pipeline itself
+ottera.tv                        # Ottera ad SDK
+stream.ads.ottera.tv
+otteravision.com                 # LG's ad-exchange front-end (lge-oo-es.otteravision.com)
+lge-oo-es.otteravision.com
+adstk.io                         # AdStack SSP (pixel + impression endpoints)
+eu-ssp-pix.adstk.io
+eu-imp-pix.adstk.io
+smartadserver.com                # Smart AdServer
+prg.smartadserver.com
+axiom.co                         # Axiom analytics
+api.axiom.co
+ipify.org                        # public-IP echo (api.ipify.org) — geo/telemetry
+api.ipify.org
+onetrust.io                      # OneTrust consent-management
+mobile-data.onetrust.io
+googletagmanager.com             # Google Tag Manager — fires on HbbTV broadcaster pages + app webviews
+www.googletagmanager.com
+lgsmartad.com                    # LG ad server (suffix covers es.ad.lgsmartad.com and siblings)
+
 # =============================================================================
 # STRICT section — ThinQ / voice / AI / LG control plane.
 
@@ -137,3 +162,18 @@ tv.wiselg.com                    # voice proxy, IoT push, sports, CDP, LG shop, 
 api.lgtviot.com                  # ThinQ IoT cloud (v3.0)
 wiseconfig.lgtvcommon.com        # WISE smartConfig delivery
 wiseresource.lgtvcommon.com      # WISE resource delivery
+
+# --- LG cloud / telemetry domains seen live but never listed before --------
+# Captured the same way (scripts/sniff.sh, normal TV use). These are LG's own,
+# so they sit in STRICT: some LG feature MIGHT depend on one of them.
+#
+# NOTE: with the on-device resolver these are SUFFIX matches, so each apex
+# below covers a whole family that /etc/hosts could never express. This is
+# what closes the `eic.*.lgtvcommon.com` beacon fleet and the `eic.*`/`cdp*`
+# variants that kept resolving through connmand.
+lgtvcommon.com                   # LG telemetry/common: eic.*, cdpbeacon*, ads.*, nudge.*, homeprv.*, recommend.*, pnv.*, qcardservice.*, wise*
+lgwebostv.com                    # LG service hosting (es.app. / es.elastic.lgwebostv.com)
+lgeapi.com                       # LG API gateway (ES.lgeapi.com)
+lgappstv.com                     # LG app-store + ad delivery (ad.lgappstv.com and the store CDN)
+lgthinq.com                      # ThinQ cloud (common. / connect-client. / he-eu-ai.lgthinq.com)
+lge.com                          # ALL LG corp domains: firmware OTA, telemetry, first-time-setup CDNs
