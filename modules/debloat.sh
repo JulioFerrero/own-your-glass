@@ -75,13 +75,24 @@ OYG_MOD_DEBLOAT=1
 # which runs under iotjs and never matches `pidof familycare`).
 #
 # Tier C (operator-requested):
-#   uploadd   log-upload daemon (/usr/sbin/uploadd -v). This is the
-#             component that ships device logs off-box — i.e. telemetry.
-#             Disabling it stops log upload; local logging is unaffected.
 #   wowplay   LG wireless-display / screen-mirroring receiver.
 #             Disabling it removes the "mirror your screen to the TV"
 #             feature; UPnP/DLNA (upnpd, dmost, dmr, umediaserver) is
-#             deliberately left RUNNING on this device.
+#             deliberately left RUNNING on this device. wowplay is
+#             Type=static, so systemctl stop + kill is permanent and
+#             ls-hubd does not respawn it.
+#
+#   uploadd   log-upload daemon (/usr/sbin/uploadd -v). This is the
+#             component that ships device logs off-box — i.e. telemetry.
+#             Disabling it stops log upload; local logging is unaffected.
+#             uploadd's luna-service2 unit is Type=dynamic, which means
+#             ls-hubd will re-exec it on the next LS2 call to
+#             com.palm.uploadd — so `systemctl stop` + `kill` only
+#             works until the next caller. The structural fix is to
+#             bind-mount /dev/null over the binary itself, listed in
+#             DEBLOAT_BINARIES_SPEC below. The unit entry is removed
+#             from this spec to avoid misleading status reports; the
+#             boot hook re-establishes the bind every boot.
 DEBLOAT_UNITS_SPEC='
 mycar|com.webos.service.mycar.service|com.webos.service.mycar
 familycare|com.webos.service.familycare.service|
@@ -91,13 +102,21 @@ ai-inference-manager|ai-inference-manager.service|ai-inference-manager
 avahi-daemon|avahi-daemon.service|avahi-daemon
 avahi-adaptor|avahi-adaptor.service|avahi-adaptor
 ruleengine|com.webos.service.ruleengine.service|com.webos.service.ruleengine
-uploadd|uploadd.service|uploadd
 wowplay|wowplay.service|wowplay
 '
 
 # --- spec: luna-launched binaries -------------------------------------------
 # Absolute paths only. Verified at runtime: if the binary is absent on
 # this build of webOS we skip gracefully and say so.
+#
+# The `<path>|<proc>` form sets the kill-name override; the bind target
+# is always <path>. The `uploadd` entry is the structural fix for
+# com.palm.uploadd: its LS2 service is Type=dynamic, so ls-hubd respawns
+# it on the next call to luna://com.palm.uploadd and `systemctl stop`
+# + `kill` is unwinnable — only `mount --bind /dev/null` over the
+# binary itself stops the respawn (the exec'd process opens /dev/null
+# and exits). wowplay is Type=static and is therefore handled in
+# DEBLOAT_UNITS_SPEC; it does NOT appear here.
 DEBLOAT_BINARIES_SPEC='
 /usr/bin/com.webos.app.voice
 /usr/sbin/lg.thinqai.adapter
@@ -107,6 +126,7 @@ DEBLOAT_BINARIES_SPEC='
 /usr/palm/services/com.webos.service.dial/discovery-server.js|ss.gateway
 /usr/sbin/iconnectivity
 /usr/sbin/sdx
+/usr/sbin/uploadd|uploadd
 '
 
 # Per-entry "what feature is lost" — Tier B (boot-enforced):
@@ -128,6 +148,18 @@ DEBLOAT_BINARIES_SPEC='
 #     delivery). Kills LG's content-update channel; the device still
 #     launches installed apps but stops receiving new / updated
 #     content tiles.
+#   /usr/sbin/uploadd|uploadd
+#     Log-upload daemon (sends device logs to LG — telemetry). The
+#     `<path>|uploadd` form uses an explicit kill-name override only
+#     because basename(uploadd) happens to equal uploadd (kept
+#     explicit for symmetry with ss.gateway). The LS2 service
+#     com.palm.uploadd is `Type=dynamic`, so ls-hubd respawns the
+#     binary on the next luna-send to it — the only structural fix is
+#     the bind-mount itself. The bind survives the process; even when
+#     ls-hubd re-execs the path, the new process opens /dev/null and
+#     exits immediately (verified: pidof uploadd is empty after the
+#     bind, and a deliberate luna-send to com.palm.uploadd returns
+#     `com.palm.uploadd is not running` with the PID still empty).
 
 DEBLOAT_UNITS_STOPPED_LIST="$OYG_ROOT/debloat.units.stopped"
 DEBLOAT_PROCS_KILL_LIST="$OYG_ROOT/debloat.procs.kill"

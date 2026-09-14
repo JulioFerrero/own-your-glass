@@ -275,11 +275,28 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         fi
         $OYG_DST/oyg harden --only network
     fi
+
+    # Perms re-apply: only when the user previously hardened the perms
+    # module (state has perms.applied=1). perms is purely local — it
+    # chmods vendor + webOSbrew code paths — so it does NOT depend on
+    # the network being up. We re-export OYG_AGGRESSIVE=1 from state so
+    # the perms module's harden entry point will accept the request at
+    # boot (the module refuses without the flag because changing vendor
+    # + webOSbrew paths is invasive). webOSbrew updates may re-extract
+    # these paths in mode 0777 between boots, so the chmod needs to be
+    # re-applied every boot — which is why this lives in the hook.
+    # Operator flow: run 'OYG_AGGRESSIVE=1 oyg harden --only perms'
+    # after install; that sets perms.applied=1 and the installer does
+    # NOT run it for them.
+    if [ -r "\$STATE" ] && grep -q '^perms.applied=1' "\$STATE"; then
+        export OYG_AGGRESSIVE=1
+        $OYG_DST/oyg harden --only perms
+    fi
     date '+%Y-%m-%dT%H:%M:%S boot-hook done'
 } >\$BOOT_LOG 2>&1
 EOF
     chmod 0755 "$INIT_HOOK"
-    log "boot hook installed at $INIT_HOOK (will re-apply capture/mic/voice/logs/remoteone/apps/policy, enforce services.stopped + services.kill, enforce debloat if previously applied, and network if previously applied)"
+    log "boot hook installed at $INIT_HOOK (will re-apply capture/mic/voice/logs/remoteone/apps/policy, enforce services.stopped + services.kill, and state-gated: debloat, network, perms when previously applied)"
 }
 
 main() {
