@@ -177,3 +177,4 @@ lgeapi.com                       # LG API gateway (ES.lgeapi.com)
 lgappstv.com                     # LG app-store + ad delivery (ad.lgappstv.com and the store CDN)
 lgthinq.com                      # ThinQ cloud (common. / connect-client. / he-eu-ai.lgthinq.com)
 lge.com                          # ALL LG corp domains: firmware OTA, telemetry, first-time-setup CDNs
+wiselg.com                       # LG WISE platform: covers eic.tv.wiselg.com (+ voice proxy, account, shop, IoT push)
