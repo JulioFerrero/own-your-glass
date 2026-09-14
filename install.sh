@@ -36,7 +36,7 @@ require_dst_writable() {
 
 install_files() {
     log "installing files to $OYG_DST"
-    mkdir -p "$OYG_DST/lib" "$OYG_DST/modules" "$OYG_DST/etc" "$OYG_DST/backup" "$OYG_DST/watchers"
+    mkdir -p "$OYG_DST/lib" "$OYG_DST/modules" "$OYG_DST/etc" "$OYG_DST/backup" "$OYG_DST/watchers" "$OYG_DST/scripts"
     cp "$OYG_SRC/oyg" "$OYG_DST/oyg"
     cp "$OYG_SRC/lib/common.sh" "$OYG_DST/lib/common.sh"
     for f in "$OYG_SRC/modules"/*.sh; do
@@ -47,6 +47,12 @@ install_files() {
         [ -f "$f" ] || continue
         cp "$f" "$OYG_DST/etc/$(basename "$f")"
     done
+    # scripts/ — operator tools that must be runnable from the device
+    # (sniffer, DNS sinkhole resolver + wrapper + watchdog).
+    for f in "$OYG_SRC"/scripts/*.sh "$OYG_SRC"/scripts/*.py; do
+        [ -f "$f" ] || continue
+        cp "$f" "$OYG_DST/scripts/$(basename "$f")"
+    done
     chmod 0755 "$OYG_DST/oyg"
     chmod 0644 "$OYG_DST/lib/common.sh" 2>/dev/null || true
     for f in "$OYG_DST/etc"/*.txt; do
@@ -54,7 +60,16 @@ install_files() {
         chmod 0644 "$f"
     done
     for f in "$OYG_DST/modules"/*.sh; do
+        [ -f "$f" ] || continue
         chmod 0644 "$f"
+    done
+    for f in "$OYG_DST/scripts"/*.sh; do
+        [ -f "$f" ] || continue
+        chmod 0755 "$f"
+    done
+    for f in "$OYG_DST/scripts"/*.py; do
+        [ -f "$f" ] || continue
+        chmod 0755 "$f"
     done
 }
 
@@ -273,7 +288,13 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         if grep -q '^network.dns_override=1' "\$STATE"; then
             export OYG_DNS_OVERRIDE=1
         fi
+        if grep -q '^network.dns_resolver=1' "\$STATE"; then
+            export OYG_DNS_RESOLVER=1
+        fi
         $OYG_DST/oyg harden --only network
+        # The network module's layer 4 (dns.sh start) is idempotent; it
+        # also re-spawns the watchdog if not already running. We never
+        # restart connmand — only SIGHUP the existing pid.
     fi
 
     # Perms re-apply: only when the user previously hardened the perms
