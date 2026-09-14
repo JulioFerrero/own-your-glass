@@ -13,10 +13,12 @@
 #                             remoteone chmod)
 #   OYG_DEBLOAT=1             opt in to the debloat module (stops family /
 #                             buddy / AI / avahi / ruleengine / voice UI)
-#   OYG_NETWORK_BLOCK=1       opt in to the network module (three layers)
+#   OYG_NETWORK_BLOCK=1       opt in to the network module (four layers)
 #   OYG_NETWORK_STRICT=1      include STRICT section (ThinQ/voice/AI/LG)
 #   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
 #   OYG_DNS_OVERRIDE=1        rewrite /var/lib/misc/resolv.conf sinkhole
+#   OYG_DNS_RESOLVER=1        install on-device sinkhole resolver and wire
+#                             it as ConnMan's upstream (layer 4)
 #   OYG_LOG_INTERVAL=<secs>   logs module clear interval (default 60)
 #   OYG_DOMAINS_FILE=<path>   legacy override (unused; blocklists in etc/)
 
@@ -44,10 +46,12 @@ Environment flags (read by individual modules):
   OYG_DEBLOAT=1              opt in to the debloat module (stops family /
                              buddy / AI / avahi / ruleengine / voice UI;
                              bind-neutralises preloaded voice-app binary)
-  OYG_NETWORK_BLOCK=1        opt in to the network module (three layers)
+  OYG_NETWORK_BLOCK=1        opt in to the network module (four layers)
   OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
   OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
   OYG_DNS_OVERRIDE=1         rewrite /var/lib/misc/resolv.conf sinkhole
+  OYG_DNS_RESOLVER=1         install on-device sinkhole resolver (127.0.0.2:53)
+                             and wire it as ConnMan's upstream (layer 4)
   OYG_LOG_INTERVAL=<secs>    logs module clear interval (default 60)
 
 Available modules:
@@ -56,7 +60,7 @@ Available modules:
   debloat    opt-in (OYG_DEBLOAT=1) — stop+kill unused feature services; bind-neutralise preloaded voice-app binary
   mic        mute capture gain (where permitted)
   logs       periodic clear of /tmp/var/log/messages and /tmp/app.voice.log
-  network    three-layer mitigation (see README "Network module" section) — layer 1 emits dual-stack (IPv4 + IPv6) hosts-file sinkholes
+  network    four-layer mitigation (see README "Network module" section) — layer 1 emits dual-stack (IPv4 + IPv6) hosts-file sinkholes; layer 4 (opt-in OYG_DNS_RESOLVER=1) installs an on-device sinkhole resolver on 127.0.0.2:53 and wires ConnMan to use it (no connmand restart)
   perms      chmod webOSbrew hbchannel + Google Home runtime (aggressive)
   remoteone  verify vendor remote-support gate absence
 
@@ -87,7 +91,7 @@ list_modules() {
             logs)
                 printf 'logs        periodic clear of /tmp/var/log/messages + /tmp/app.voice.log (damage limitation)\n' ;;
             network)
-                printf 'network     three-layer mitigation: /etc/hosts bind-overlay (dual-stack IPv4+IPv6 sinkhole) + resolver blackhole (+ per-IP if OYG_NETWORK_IPBLOCK=1)\n' ;;
+                printf 'network     four-layer mitigation: /etc/hosts bind-overlay (dual-stack IPv4+IPv6 sinkhole) + resolver blackhole (+ per-IP if OYG_NETWORK_IPBLOCK=1) + on-device sinkhole resolver on 127.0.0.2:53 wired in as ConnMan upstream (opt-in OYG_DNS_RESOLVER=1)\n' ;;
             perms)
                 printf 'perms       chmod webOSbrew hbchannel + Google Home runtime paths (opt-in, OYG_AGGRESSIVE=1)\n' ;;
             remoteone)

@@ -398,6 +398,85 @@ mod_network_layer3_restore() {
 }
 
 # -----------------------------------------------------------------------------
+# Layer 4 — DNS sinkhole resolver on 127.0.0.2:53 (wired in as ConnMan's
+# upstream; addresses the resolver-bypass gap that lets webOS daemons
+# resolve blocked domains even after /etc/hosts is bind-mounted; see
+# docs/FINDINGS.md F14g and README "Network module" section).
+#
+# Why layer 4 lives here: the resolver's source-of-truth blocklist is
+# `$OYG_ROOT/hosts` — the same file layer 1 generates from
+# `etc/blocklist-*.txt`. mtime-watched by `dnssink.py`, so re-running
+# `oyg harden --only network` after editing the blocklists picks them
+# up without restarting the listener.
+# -----------------------------------------------------------------------------
+
+DNS_BIND=127.0.0.2
+DNS_PORT=53
+
+# Resolve the path of scripts/dns.sh. Both `oyg` and `install.sh` set
+# OYG_HERE to the directory containing the loader script. When neither
+# is set (e.g. when network.sh is sourced from a one-off test under
+# `bash -c`), we fall back to OYG_ROOT, which is the install target.
+_dns_bin() {
+    if [ -n "${OYG_HERE:-}" ] && [ -r "$OYG_HERE/scripts/dns.sh" ]; then
+        printf '%s' "$OYG_HERE/scripts/dns.sh"
+        return 0
+    fi
+    if [ -n "${OYG_ROOT:-}" ] && [ -r "$OYG_ROOT/scripts/dns.sh" ]; then
+        printf '%s' "$OYG_ROOT/scripts/dns.sh"
+        return 0
+    fi
+    return 1
+}
+
+mod_network_layer4_harden() {
+    [ "${OYG_DNS_RESOLVER:-0}" = "1" ] || {
+        ok "network: layer4 — skipped (set OYG_DNS_RESOLVER=1 to install the on-device sinkhole resolver)"
+        return 0
+    }
+    [ "$OYG_DRY_RUN" = "1" ] || require_root
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "network: layer4 — python3 missing; cannot run the sinkhole"
+        return 0
+    fi
+
+    bin=$(_dns_bin) || {
+        warn "network: layer4 — scripts/dns.sh not found anywhere"
+        return 0
+    }
+    warn "network: layer4 — installing sinkhole resolver on $DNS_BIND:$DNS_PORT and wiring ConnMan upstream (no connmand restart)."
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: sh %s start\n' "$bin"
+        return 0
+    fi
+    if sh "$bin" start; then
+        ok "network: layer4 — dns.sh start succeeded"
+    else
+        warn "network: layer4 — dns.sh start failed (see $OYG_ROOT/dns.log)"
+        return 1
+    fi
+}
+
+mod_network_layer4_restore() {
+    [ "${OYG_DNS_RESOLVER:-0}" = "1" ] && [ "$(state_get dns.applied)" != "1" ] && {
+        ok "network: layer4 — not running (state clean); nothing to revert"
+        return 0
+    }
+    [ "$OYG_DRY_RUN" = "1" ] || require_root
+    bin=$(_dns_bin) || return 0
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: sh %s stop\n' "$bin"
+        return 0
+    fi
+    if sh "$bin" stop; then
+        ok "network: layer4 — dns.sh stop succeeded"
+    else
+        warn "network: layer4 — dns.sh stop failed"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # top-level entry points
 # -----------------------------------------------------------------------------
 
@@ -421,20 +500,26 @@ mod_network_harden() {
     [ "${OYG_DNS_OVERRIDE:-0}" = "1" ] \
         && warn "network: OYG_DNS_OVERRIDE=1 — will rewrite /var/lib/misc/resolv.conf." \
         || ok "network: resolv.conf override disabled (set OYG_DNS_OVERRIDE=1 to enable)"
+    [ "${OYG_DNS_RESOLVER:-0}" = "1" ] \
+        && warn "network: OYG_DNS_RESOLVER=1 — layer 4 (sinkhole resolver + ConnMan upstream) ENABLED." \
+        || ok "network: layer 4 disabled (set OYG_DNS_RESOLVER=1 to install the sinkhole resolver + ConnMan upstream)"
 
     mod_network_layer1_harden || warn "network: layer1 failed"
     mod_network_layer2_harden || warn "network: layer2 failed"
     mod_network_layer3_harden || warn "network: layer3 failed"
+    mod_network_layer4_harden || warn "network: layer4 failed"
 
     state_put "network.applied" "1"
     state_put "network.strict"  "${OYG_NETWORK_STRICT:-0}"
     state_put "network.ipblock" "${OYG_NETWORK_IPBLOCK:-0}"
     state_put "network.dns_override" "${OYG_DNS_OVERRIDE:-0}"
+    state_put "network.dns_resolver" "${OYG_DNS_RESOLVER:-0}"
 }
 
 mod_network_restore() {
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     have ip || warn "network: ip missing — layer 2 + 3 routes cannot be removed (will leak until reboot)"
+    mod_network_layer4_restore
     mod_network_layer3_restore
     mod_network_layer2_restore
     mod_network_layer1_restore
@@ -442,6 +527,7 @@ mod_network_restore() {
     state_drop "network.strict"
     state_drop "network.ipblock"
     state_drop "network.dns_override"
+    state_drop "network.dns_resolver"
 }
 
 mod_network_status() {
@@ -538,6 +624,39 @@ mod_network_status() {
             fi
         else
             print_status FAIL "network: layer2 — resolv.conf override target $target missing"
+        fi
+    fi
+
+    # Layer 4 — DNS sinkhole resolver on 127.0.0.2:53 wired in as
+    # ConnMan's upstream. Reality check (never a state-key check, see
+    # the F14g finding): is the resolver actually answering on
+    # 127.0.0.2? Is the connman service settings file carrying
+    # Nameservers=127.0.0.2? Do we still have the original backup?
+    svc=$(state_get dns.service_dir)
+    if [ -z "$svc" ] || [ "$(state_get dns.applied)" != "1" ]; then
+        if [ "$(state_get network.dns_resolver)" = "1" ]; then
+            print_status PARTIAL "network: layer4 — opted in but dns.applied!=1 (resolver/connman override missing)"
+        else
+            print_status N/A "network: layer4 — not enabled (set OYG_DNS_RESOLVER=1)"
+        fi
+    else
+        if nslookup -timeout=1 -port=53 example.com "$DNS_BIND" >/dev/null 2>&1 \
+            || nslookup -timeout=1 example.com "$DNS_BIND" >/dev/null 2>&1; then
+            print_status OK "network: layer4 — resolver answering on $DNS_BIND:$DNS_PORT"
+        else
+            print_status FAIL "network: layer4 — resolver NOT answering on $DNS_BIND:$DNS_PORT"
+        fi
+        if [ -f "$svc/settings" ] \
+            && grep -q '^[[:space:]]*Nameservers=127\.0\.0\.2;' "$svc/settings"; then
+            print_status OK "network: layer4 — ConnMan service settings ($svc/settings) carries Nameservers=127.0.0.2;"
+        else
+            print_status FAIL "network: layer4 — ConnMan service settings ($svc/settings) MISSING Nameservers=127.0.0.2;"
+        fi
+        bak=$(state_get dns.original_settings)
+        if [ -n "$bak" ] && [ -e "$bak" ]; then
+            print_status OK "network: layer4 — original connman settings backed up at $bak"
+        else
+            print_status PARTIAL "network: layer4 — original connman settings backup missing"
         fi
     fi
 }
