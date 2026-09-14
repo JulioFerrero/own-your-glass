@@ -292,9 +292,12 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
             export OYG_DNS_RESOLVER=1
         fi
         $OYG_DST/oyg harden --only network
-        # The network module's layer 4 (dns.sh start) is idempotent; it
-        # also re-spawns the watchdog if not already running. We never
-        # restart connmand — only SIGHUP the existing pid.
+        # The network module's layer 4 (dns.sh start) is idempotent: it
+        # brings the resolver up FIRST and only then bind-mounts
+        # /etc/resolv.conf over it, so there is no window where lookups
+        # fail, and it disarms the auto-revert timer on success. This
+        # hook NEVER signals, reloads or restarts connmand (see the
+        # post-mortem in scripts/dns.sh).
     fi
 
     # Perms re-apply: only when the user previously hardened the perms
