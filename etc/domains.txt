@@ -1,0 +1,44 @@
+# own-your-glass — telemetry / ad / cloud domain list
+#
+# IMPORTANT:
+#   - This file is DISABLED by default. Network blocking requires
+#       OYG_NETWORK_BLOCK=1 oyg harden
+#   - Each line is one domain; lines starting with '#' are ignored.
+#   - On-device we have no iptables, no /etc/hosts, and /etc is read-only.
+#     We block via `ip route add blackhole <ip>` for resolved A records.
+#   - CDN IPs change. Refresh this list periodically; stale entries can
+#     break apps, EPG, firmware updates, and SmartShare streaming.
+#
+# Why each entry is listed:
+# ngfts.lge.com                  LG First-Time Setup / provisioning telemetry
+# aic-ngfts.lge.com              LG AIC (Ad-ID / Identity Collector)
+# eic-ngfts.lge.com              LG EIC (Event/Engagement Collector)
+# common.lgthinq.com             ThinQ cloud control plane (device↔cloud)
+# kr.lgeapi.com                  LG cloud API gateway (KR region)
+# connect-client.lgthinq.com     ThinQ Connect client beacon
+# he-eu-ai.lgthinq.com           HomeEdge / AI backend (EU region)
+# aic.ads.lgtvcommon.com         LG smart-ad server
+# marker.konograma.com           ACR (automatic content recognition) marker
+# marker2.konograma.com          ACR secondary marker endpoint
+# smartclip.net                  Ads SmartClip (video ad network)
+# criteo.com                     Ads Criteo retargeting
+# demdex.net                     Adobe AudienceManager device graph
+# doubleclick.net                Google Ads (DV360 / display)
+# everesttech.net                Adobe EverestTech ad attribution
+# mobile.pipe.aria.microsoft.com Microsoft Aria / Clarity telemetry
+ngfts.lge.com
+aic-ngfts.lge.com
+eic-ngfts.lge.com
+common.lgthinq.com
+kr.lgeapi.com
+connect-client.lgthinq.com
+he-eu-ai.lgthinq.com
+aic.ads.lgtvcommon.com
+marker.konograma.com
+marker2.konograma.com
+smartclip.net
+criteo.com
+demdex.net
+doubleclick.net
+everesttech.net
+mobile.pipe.aria.microsoft.com

@@ -1,0 +1,225 @@
+#!/bin/sh
+# oyg — own-your-glass (POSIX sh, runs on BusyBox sh on-device)
+#
+# Subcommands:
+#   oyg list
+#   oyg status
+#   oyg harden [--dry-run] [--only MODULE]
+#   oyg restore [--dry-run] [--only MODULE]
+#   oyg verify
+#
+# Environment:
+#   OYG_AGGRESSIVE=1          enable risky modules (services-extra, perms,
+#                             remoteone chmod)
+#   OYG_DEBLOAT=1             opt in to the debloat module (stops family /
+#                             buddy / AI / avahi / ruleengine / voice UI)
+#   OYG_NETWORK_BLOCK=1       opt in to the network module (three layers)
+#   OYG_NETWORK_STRICT=1      include STRICT section (ThinQ/voice/AI/LG)
+#   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
+#   OYG_DNS_OVERRIDE=1        rewrite /var/lib/misc/resolv.conf sinkhole
+#   OYG_LOG_INTERVAL=<secs>   logs module clear interval (default 60)
+#   OYG_DOMAINS_FILE=<path>   legacy override (unused; blocklists in etc/)
+
+set -u
+
+OYG_HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$OYG_HERE/lib/common.sh"
+
+MODULES_DIR="$OYG_HERE/modules"
+
+usage() {
+    cat <<EOF
+oyg — own-your-glass hardening toolkit
+
+Usage:
+  oyg list
+  oyg status [--dry-run]
+  oyg harden [--dry-run] [--only MODULE]
+  oyg restore [--dry-run] [--only MODULE]
+  oyg verify
+
+Environment flags (read by individual modules):
+  OYG_AGGRESSIVE=1           enable risky modules (services-extra, perms,
+                             remoteone chmod)
+  OYG_DEBLOAT=1              opt in to the debloat module (stops family /
+                             buddy / AI / avahi / ruleengine / voice UI;
+                             bind-neutralises preloaded voice-app binary)
+  OYG_NETWORK_BLOCK=1        opt in to the network module (three layers)
+  OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
+  OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
+  OYG_DNS_OVERRIDE=1         rewrite /var/lib/misc/resolv.conf sinkhole
+  OYG_LOG_INTERVAL=<secs>    logs module clear interval (default 60)
+
+Available modules:
+  services   stop+kill contentminer/objectdetection/adoverlay/acr/remotediag (and iot-client/pushclient if OYG_AGGRESSIVE=1); also handles luna-launched LS2 services
+  capture    neutralise /tmp/capture.rgb screen leak + vtCaptureTestSuite
+  debloat    opt-in (OYG_DEBLOAT=1) — stop+kill unused feature services; bind-neutralise preloaded voice-app binary
+  mic        mute capture gain (where permitted)
+  logs       periodic clear of /tmp/var/log/messages and /tmp/app.voice.log
+  network    three-layer mitigation (see README "Network module" section) — layer 1 emits dual-stack (IPv4 + IPv6) hosts-file sinkholes
+  perms      chmod webOSbrew hbchannel + Google Home runtime (aggressive)
+  remoteone  verify vendor remote-support gate absence
+
+Every action is idempotent and reversible. Every mutation is logged.
+EOF
+}
+
+all_modules() {
+    for f in "$MODULES_DIR"/*.sh; do
+        [ -f "$f" ] || continue
+        basename "$f" .sh
+    done
+}
+
+list_modules() {
+    printf '%s\n' "Module      What it does"
+    printf '%s\n' "-------     ------------------------------------------------"
+    for m in $(all_modules); do
+        case "$m" in
+            services)
+                printf 'services    stop+kill contentminer, objectdetection, adoverlay, acr, remotediag (+ iot-client, pushclient if OYG_AGGRESSIVE=1); handles luna-launched LS2 services via per-spec (id|unit|process)\n' ;;
+            capture)
+                printf 'capture     chattr+immutable / chmod+watcher on /tmp/capture.rgb; mount --bind /dev/null on vtCaptureTestSuite (vendor ro)\n' ;;
+            debloat)
+                printf 'debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine; bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + sdx (+ other luna-launched binaries if present); re-applied on every boot\n' ;;
+            mic)
+                printf 'mic         chmod 000 + mount --bind /dev/null over each ALSA capture PCM (pcmC*D*c); playback preserved\n' ;;
+            logs)
+                printf 'logs        periodic clear of /tmp/var/log/messages + /tmp/app.voice.log (damage limitation)\n' ;;
+            network)
+                printf 'network     three-layer mitigation: /etc/hosts bind-overlay (dual-stack IPv4+IPv6 sinkhole) + resolver blackhole (+ per-IP if OYG_NETWORK_IPBLOCK=1)\n' ;;
+            perms)
+                printf 'perms       chmod webOSbrew hbchannel + Google Home runtime paths (opt-in, OYG_AGGRESSIVE=1)\n' ;;
+            remoteone)
+                printf 'remoteone   verify /mnt/lg/cmn_data/remoteDebug/ absent; optionally tighten cmn_data (aggressive)\n' ;;
+            apps)
+                printf 'apps        hide a curated list of unwanted apps from the launcher via LG blockedSystemAppList/<REGION>.json (ad machinery, remote-support, SDK examples, demo apps); preserves existing entries; skips IDs absent on device\n' ;;
+            policy)
+                printf 'policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind); force-decline LG consents in /var/luna/preferences/eula (decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported)\n' ;;
+            voice)
+                printf 'voice       chmod 000 + mount --bind /dev/null over voiceinput_hidraw / voiceinput / voiceconductor (Magic Remote mic); /dev/hidraw0 untouched\n' ;;
+            *)
+                printf '%s\n' "$m" ;;
+        esac
+    done
+}
+
+load_module() {
+    m=$1
+    f="$MODULES_DIR/$m.sh"
+    if [ ! -f "$f" ]; then
+        err "no such module: $m"
+        return 1
+    fi
+    . "$f"
+}
+
+cmd_list() {
+    list_modules
+}
+
+cmd_status() {
+    OYG_DRY_RUN=0
+    [ "${1:-}" = "--dry-run" ] && OYG_DRY_RUN=1
+    export OYG_DRY_RUN
+    if [ -w "${OYG_ROOT%/*}" ] 2>/dev/null; then
+        ensure_dirs 2>/dev/null || true
+    fi
+    printf '%s\n' "== own-your-glass status =="
+    for m in $(all_modules); do
+        load_module "$m" || continue
+        printf '[%s]\n' "$m"
+        func="mod_${m}_status"
+        if type "$func" >/dev/null 2>&1; then
+            # status functions are read-only queries. Do NOT force dry-run here:
+            # doing so makes them report simulated values (e.g. every systemd unit
+            # looks "present") instead of real device state.
+            "$func" || true
+        else
+            print_status N/A "no status fn"
+        fi
+    done
+}
+
+run_modules() {
+    action=$1; only=$2; dry=$3
+    OYG_DRY_RUN=$dry
+    export OYG_DRY_RUN
+    if { [ "$action" = "harden" ] || [ "$action" = "restore" ]; } && [ "$dry" != "1" ]; then
+        require_root
+    fi
+    ensure_dirs
+
+    mods=$(all_modules)
+    if [ -n "$only" ]; then
+        mods=$only
+        found=0
+        for m in $mods; do
+            if [ -f "$MODULES_DIR/$m.sh" ]; then
+                found=1
+            fi
+        done
+        if [ "$found" = "0" ]; then
+            err "no such module: $only"
+            exit 1
+        fi
+    fi
+
+    for m in $mods; do
+        load_module "$m" || continue
+        func="mod_${m}_${action}"
+        if type "$func" >/dev/null 2>&1; then
+            printf '\n== %s: %s ==\n' "$m" "$action"
+            "$func" || warn "module $m returned non-zero"
+        else
+            warn "module $m has no $action function"
+        fi
+    done
+}
+
+cmd_verify() {
+    bad=0
+    for m in $(all_modules); do
+        load_module "$m" || continue
+        out=$("mod_${m}_status" 2>&1 || true)
+        if printf '%s' "$out" | grep -Eq '^(FAIL|PARTIAL) '; then
+            bad=$((bad + 1))
+            printf '[%s] not fully applied:\n' "$m"
+            printf '%s\n' "$out"
+        fi
+    done
+    if [ "$bad" -gt 0 ]; then
+        err "verify: $bad module(s) not fully applied"
+        exit 2
+    fi
+    ok "verify: all applied modules are OK or N/A"
+}
+
+main() {
+    sub=${1:-}
+    [ $# -gt 0 ] && shift || true
+
+    dry=0
+    only=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) dry=1 ;;
+            --only)    shift; only=${1:-} ;;
+            -h|--help) usage; exit 0 ;;
+            *) err "unknown arg: $1"; usage; exit 64 ;;
+        esac
+        shift
+    done
+
+    case "$sub" in
+        list)     cmd_list ;;
+        status)   cmd_status "$@" ;;
+        harden)   run_modules harden "$only" "$dry" ;;
+        restore)  run_modules restore "$only" "$dry" ;;
+        verify)   cmd_verify ;;
+        ""|help|-h|--help) usage ;;
+        *) err "unknown subcommand: $sub"; usage; exit 64 ;;
+    esac
+}
+
+main "$@"
