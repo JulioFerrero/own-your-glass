@@ -1,8 +1,8 @@
 OYG_MOD_POLICY=1
 
-# policy.sh — enforce LG consent + webOSbrew update-blocker policy.
+# policy.sh — enforce LG consent + webOSbrew update-blocker + telnet-disable policy.
 #
-# TWO JOBS, both applied at every boot because the on-device state
+# THREE JOBS, all applied at every boot because the on-device state
 # changes on its own.
 #
 # ---------------------------------------------------------------------
@@ -20,6 +20,18 @@ OYG_MOD_POLICY=1
 # contains those update servers, so on this device both layers hold
 # the line. If our init.d hook ever fails to run, webOSbrew's own
 # mechanism will still silently sinkhole the four update servers.
+#
+# ---------------------------------------------------------------------
+# Job A2 — keep telnetd off.
+# ---------------------------------------------------------------------
+# We `touch` /var/luna/preferences/webosbrew_telnet_disabled. The
+# webOSbrew startup.sh gates the `telnetd -l /bin/sh` launch on the
+# ABSENCE of this file — present means "do not start telnetd". The
+# default launch is `telnetd -l /bin/sh`, which is an unauthenticated
+# root shell on the LAN: no password prompt, no banner, no log;
+# anyone on the same network who can reach the TV gets a root shell
+# as soon as the daemon is up. SSH is the operator's path in, so we
+# deliberately do not touch /var/luna/preferences/webosbrew_sshd_enabled.
 #
 # ---------------------------------------------------------------------
 # Job B — force-decline LG consents at the source.
@@ -80,15 +92,17 @@ OYG_MOD_POLICY=1
 # ---------------------------------------------------------------------
 # STATE KEYS
 # ---------------------------------------------------------------------
-#   policy.applied          "1" if harden completed cleanly
-#   policy.flagfile         "/var/luna/preferences/webosbrew_block_updates"
-#   policy.eula.path        "/var/luna/preferences/eula"
-#   policy.eula.backup      "$OYG_BACKUP/eula.orig"
-#   policy.eula.flipped     count of entries flipped on the LAST run
-#   policy.eula.allow       empty = decline all; otherwise space-list of ids
-#   policy.eula.last.before count of "accepted":true BEFORE last rewrite
+#   policy.applied            "1" if harden completed cleanly
+#   policy.flagfile           "/var/luna/preferences/webosbrew_block_updates"
+#   policy.telnetflag         "/var/luna/preferences/webosbrew_telnet_disabled"
+#   policy.eula.path          "/var/luna/preferences/eula"
+#   policy.eula.backup        "$OYG_BACKUP/eula.orig"
+#   policy.eula.flipped       count of entries flipped on the LAST run
+#   policy.eula.allow         empty = decline all; otherwise space-list of ids
+#   policy.eula.last.before   count of "accepted":true BEFORE last rewrite
 
 POLICY_FLAG=${POLICY_FLAG:-/var/luna/preferences/webosbrew_block_updates}
+POLICY_TELNET_FLAG=${POLICY_TELNET_FLAG:-/var/luna/preferences/webosbrew_telnet_disabled}
 POLICY_EULA=${POLICY_EULA:-/var/luna/preferences/eula}
 POLICY_EULA_BACKUP=${POLICY_EULA_BACKUP:-"$OYG_BACKUP/eula.orig"}
 
@@ -176,10 +190,39 @@ mod_policy_harden() {
         if run touch "$POLICY_FLAG" 2>/dev/null; then
             ok "policy: webOSbrew update-blocker flag present at $POLICY_FLAG"
         else
-            warn "policy: touch $POLICY_FLAG failed (Job B still runs)"
+            warn "policy: touch $POLICY_FLAG failed (Job A2 + Job B still run)"
         fi
     fi
     state_put "policy.flagfile" "$POLICY_FLAG"
+
+    # -----------------------------------------------------------------
+    # Job A2 — touch the webOSbrew telnet-disable flag (idempotent).
+    # -----------------------------------------------------------------
+    # webOSbrew's startup.sh launches `telnetd -l /bin/sh` only when
+    # this file is ABSENT. Keeping it present suppresses the launch
+    # entirely. `telnetd -l /bin/sh` is an unauthenticated root shell
+    # on the LAN — the operator's management path is SSH, so we want
+    # telnetd off and never want it to come back on a reboot.
+    tflagdir=${POLICY_TELNET_FLAG%/*}
+    if [ ! -d "$tflagdir" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: mkdir -p %s\n' "$tflagdir"
+        elif ! mkdir -p "$tflagdir" 2>/dev/null; then
+            warn "policy: cannot create $tflagdir — telnet-disable step skipped (Job B still runs)"
+        fi
+    fi
+
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: touch %s\n' "$POLICY_TELNET_FLAG"
+        ok "policy: webOSbrew telnet-disable flag would be present at $POLICY_TELNET_FLAG"
+    else
+        if run touch "$POLICY_TELNET_FLAG" 2>/dev/null; then
+            ok "policy: webOSbrew telnet-disable flag present at $POLICY_TELNET_FLAG"
+        else
+            warn "policy: touch $POLICY_TELNET_FLAG failed (Job B still runs)"
+        fi
+    fi
+    state_put "policy.telnetflag" "$POLICY_TELNET_FLAG"
 
     # -----------------------------------------------------------------
     # Job B — force-decline LG consents.
@@ -339,6 +382,26 @@ mod_policy_restore() {
         ok "policy: webOSbrew update-blocker flag already absent"
     fi
 
+    # Job A2 — remove the webOSbrew telnet-disable flag. WARNING:
+    # removing this flag re-enables `telnetd -l /bin/sh` on the next
+    # boot — an unauthenticated root shell on the LAN. We do not
+    # silently drop it on `restore`; the operator must opt in by
+    # running `oyg restore --only policy` and confirming. The
+    # module still removes it when asked (restore is an explicit
+    # undo of harden), and the WARN line above is the audit trail.
+    if [ -e "$POLICY_TELNET_FLAG" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: rm -f %s\n' "$POLICY_TELNET_FLAG"
+        elif run rm -f "$POLICY_TELNET_FLAG" 2>/dev/null; then
+            warn "policy: removed webOSbrew telnet-disable flag at $POLICY_TELNET_FLAG — telnetd may launch on next boot"
+        else
+            warn "policy: could not remove $POLICY_TELNET_FLAG — manual cleanup required"
+            rc=1
+        fi
+    else
+        ok "policy: webOSbrew telnet-disable flag already absent"
+    fi
+
     # Job B — restore the EULA file from backup.
     if [ ! -e "$POLICY_EULA_BACKUP" ]; then
         warn "policy: no backup at $POLICY_EULA_BACKUP — cannot restore EULA"
@@ -358,6 +421,7 @@ mod_policy_restore() {
 
     state_drop "policy.applied"
     state_drop "policy.flagfile"
+    state_drop "policy.telnetflag"
     state_drop "policy.eula.path"
     state_drop "policy.eula.backup"
     state_drop "policy.eula.flipped"
@@ -368,11 +432,20 @@ mod_policy_restore() {
 }
 
 mod_policy_status() {
-    # Job A: flag-file check.
+    # Job A: update-blocker flag check.
     if [ -e "$POLICY_FLAG" ]; then
         print_status OK "policy: webOSbrew update-blocker flag present at $POLICY_FLAG"
     else
         print_status FAIL "policy: webOSbrew update-blocker flag MISSING at $POLICY_FLAG"
+    fi
+
+    # Job A2: telnet-disable flag check. We report OK / FAIL on the
+    # flag's own presence — its absence means webOSbrew's startup.sh
+    # will launch `telnetd -l /bin/sh` on the next boot.
+    if [ -e "$POLICY_TELNET_FLAG" ]; then
+        print_status OK "policy: webOSbrew telnet-disable flag present at $POLICY_TELNET_FLAG"
+    else
+        print_status FAIL "policy: webOSbrew telnet-disable flag MISSING at $POLICY_TELNET_FLAG — telnetd may launch on next boot"
     fi
 
     # Job B: EULA check.
