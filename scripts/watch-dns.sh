@@ -1,14 +1,25 @@
 #!/bin/sh
 # watch-dns.sh — watchdog for the on-device DNS sinkhole resolver.
 #
-# Polls scripts/dns.sh's resolver liveness. If the resolver is dead:
-#   1. Try to restart it (up to N times).
-#   2. If still down, restore connman's original settings file from the
-#      backup under $OYG_BACKUP, so the TV is never left without DNS.
+# Every loop (default: every 15 s):
+#   1. if dns.applied=1, re-assert the resolv.conf override — ConnMan
+#      regenerates /etc/resolv.conf, which would otherwise clobber our
+#      nameservers. `dns.sh ensure` rewrites the managed file in place
+#      and re-mounts only if the bind actually vanished (idempotent,
+#      never stacks mounts).
+#   2. probe the resolver; if it is dead, restart it (up to N tries).
+#   3. if it will not come back, REVERT the override (umount) so the TV
+#      falls back to ConnMan's own resolv.conf — never left without DNS
+#      (the fallback nameserver in the override carries lookups in the
+#      meantime).
 #
-# Designed to be started by install.sh's init.d/oyg boot hook (state-
-# gated on dns.applied=1) or by scripts/dns.sh start. Writes its own
-# pid under $OYG_ROOT/watch-dns.pid so dns.sh stop can terminate it.
+# NEVER signals, reloads or restarts connmand. oyg_guard_connman_route
+# refuses to start if any forbidden pattern sneaks back into these files
+# (see the post-mortem in scripts/dns.sh).
+#
+# Started by install.sh's init.d/oyg boot hook (state-gated on
+# dns.applied=1) or by scripts/dns.sh apply. Writes its own pid under
+# $OYG_ROOT/watch-dns.pid so `dns.sh stop` can terminate it.
 #
 # Exit: never. Caller kills it with TERM.
 
@@ -24,7 +35,6 @@ STATE_PID="$OYG_ROOT/dns.pid"
 WATCHDOG_PID="$OYG_ROOT/watch-dns.pid"
 DNS_BIND=127.0.0.2
 DNS_PORT=53
-CONNMAN_SERVICES_DIR=/var/lib/connman
 
 printf '%s\n' "$$" >"$WATCHDOG_PID"
 
@@ -40,39 +50,14 @@ resolver_alive() {
     pid=$(cat "$STATE_PID" 2>/dev/null || true)
     [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null || return 1
     if have nslookup; then
-        out=$(nslookup -port=53 -timeout=1 example.com "$DNS_BIND" 2>&1) || true
+        # Probe a BLOCKED name (instant local answer) — an allowed name
+        # waits on the upstream and can false-negative under load.
+        out=$(nslookup -port=53 -timeout=1 es.nextlgsdp.com "$DNS_BIND" 2>&1) || true
         printf '%s' "$out" | grep -Eq 'Address: ' && return 0
         return 1
     fi
     # Process alive but no nslookup -> assume still serving.
     return 0
-}
-
-# Roll back the connman override WITHOUT stopping the resolver, so we
-# never leave the TV without DNS. Idempotent.
-rollback_connman() {
-    svc=$(state_get dns.service_dir 2>/dev/null || true)
-    bak=$(state_get dns.original_settings 2>/dev/null || true)
-    if [ -z "$svc" ] || [ -z "$bak" ] || [ ! -e "$bak" ]; then
-        warn_wd "no original_settings backup at $bak — cannot auto-rollback"
-        return 1
-    fi
-    if [ ! -f "$svc/settings" ]; then
-        warn_wd "$svc/settings missing — cannot auto-rollback"
-        return 1
-    fi
-    if cp -p "$bak" "$svc/settings" 2>/dev/null; then
-        ok_wd "auto-restored $svc/settings from $bak (resolver is down)"
-        if have pidof; then
-            cm=$(pidof connmand 2>/dev/null | awk '{print $1; exit}') || true
-            [ -n "${cm:-}" ] && kill -HUP "$cm" 2>/dev/null || true
-        fi
-        state_drop dns.applied
-        state_drop dns.connmand_pid
-        return 0
-    fi
-    err_wd "auto-rollback cp failed; TV may be without DNS!"
-    return 1
 }
 
 restart_resolver() {
@@ -87,18 +72,26 @@ restart_resolver() {
 }
 
 main() {
+    if ! oyg_guard_connman_route "$OYG_HERE/dns.sh" "$OYG_HERE/watch-dns.sh"; then
+        err_wd "ConnMan signal/reload pattern detected — refusing to run"
+        rm -f "$WATCHDOG_PID" 2>/dev/null || true
+        exit 1
+    fi
     log_wd "starting (interval=${PROBE_INTERVAL}s tries=${RESTART_TRIES})"
     trap 'rm -f "$WATCHDOG_PID" 2>/dev/null || true; exit 0' TERM INT
 
     while :; do
         sleep "$PROBE_INTERVAL" 2>/dev/null || sleep 1
-        if [ "$(state_get dns.applied 2>/dev/null)" != "1" ]; then
-            continue
-        fi
-        if resolver_alive; then
-            continue
-        fi
-        warn_wd "resolver dead — attempting restart"
+        [ "$(state_get dns.applied 2>/dev/null)" = "1" ] || continue
+
+        # Periodic re-apply: ConnMan regenerates resolv.conf and would
+        # otherwise clobber our nameservers. Idempotent, never stacks.
+        "$OYG_HERE/dns.sh" ensure >/dev/null 2>&1 \
+            || warn_wd "re-assert of the resolv.conf override failed"
+
+        resolver_alive && continue
+
+        warn_wd "resolver not answering — attempting restart"
         ok=1
         i=1
         while [ "$i" -le "$RESTART_TRIES" ]; do
@@ -111,8 +104,9 @@ main() {
             sleep "$RESTART_GAP" 2>/dev/null || sleep 1
         done
         if [ "$ok" != "0" ]; then
-            err_wd "resolver did not come back after $RESTART_TRIES tries — auto-rolling connman back"
-            rollback_connman || err_wd "auto-rollback failed; investigate manually"
+            err_wd "resolver did not come back after $RESTART_TRIES tries — reverting the resolv.conf override"
+            "$OYG_HERE/dns.sh" revert >/dev/null 2>&1 \
+                || err_wd "revert failed; investigate manually"
         fi
     done
 }

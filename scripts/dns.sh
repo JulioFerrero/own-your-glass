@@ -1,50 +1,69 @@
 #!/bin/sh
 # dns.sh — operator entry point for the on-device DNS sinkhole resolver.
 #
-# Wraps scripts/dnssink.py with the lifecycle, the ConnMan integration
-# ("Variant 1" — add Nameservers=127.0.0.2; to connman's service
-# settings, nudge connmand via SIGHUP, never restart), and a watchdog.
+# ==== POST-MORTEM — WHY THERE IS NO CONNMAN CODE HERE ANYMORE ====
+# Previous revisions wired the sinkhole in by editing ConnMan's service
+# settings (/var/lib/connman/<svc>/settings) and nudging connmand to
+# re-read them. That TOOK THE TV OFF THE NETWORK for ~30 minutes. Two
+# stacked bugs:
+#   1. Service-dir selection picked the first dir under /var/lib/connman/
+#      that has a `settings` file — that is the p2p_persistent_* ("DIRECT-W1")
+#      pseudo-service, NOT the connected Wi-Fi service (wifi_*_managed_psk_*).
+#   2. Nudging used `systemctl reload connman`, and connman.service has NO
+#      ExecReload, so systemd fell back to SIGHUP to connmand. On this LG
+#      build that tears the Wi-Fi down — the unit's own comment reads
+#      "Restart also wpa-supplicant in order to bring back everything into
+#      a sane state." The link dropped and never recovered. The settings
+#      file was byte-identical to its backup afterwards: the SIGNAL alone
+#      caused it.
 #
-# Why this script exists:
-#   - The TV's libc tools honour /etc/hosts (getent returns the sinkhole)
-#     but connmand's DNS proxy on 127.0.0.1:53 does NOT (verified). That
-#     means webOS daemons continue to resolve blocklisted telemetry
-#     names even after `oyg harden --only network`. The only enforcement
-#     point on this device is to make connmand use our resolver as its
-#     upstream, and only a reload (SIGHUP) — not a restart — keeps the
-#     Wi-Fi lease alive.
+# HARD RULE: NEVER signal, reload or restart connmand from this toolkit.
+# The sinkhole is hooked in via a bind-mount over /etc/resolv.conf instead
+# (below), which needs no daemon interaction at all. oyg_guard_connman_route
+# in lib/common.sh greps these files and fails loudly if any of the
+# forbidden patterns (kill -HUP, kill -s HUP, killall -HUP,
+# systemctl reload connman, systemctl restart connman, the old
+# Nameservers=127.0.0.2; settings append) is reintroduced.
+# ==== END POST-MORTEM ====
+#
+# How it hooks in now (resolv.conf; no daemon interaction):
+#   - a managed resolv.conf ($OYG_ROOT/resolv.conf.sinkhole) lists our
+#     sinkhole FIRST (127.0.0.2) and the real upstream SECOND (fallback:
+#     keeps DNS alive if the resolver dies), and is bind-mounted over
+#     /etc/resolv.conf (a symlink to /var/lib/misc/resolv.conf). /etc is
+#     read-only, but bind-mounts work — the same technique as layer 1.
+#   - the resolver is started and PROVEN answering on 127.0.0.2:53 BEFORE
+#     the override goes in, so there is never a no-DNS window.
+#   - ConnMan regenerates resolv.conf, so the watchdog re-asserts the
+#     managed file in place every loop and re-mounts only if the bind
+#     actually vanished (idempotent, never stacks mounts).
+#   - a mandatory auto-revert timer is armed at apply time: if the shell
+#     dies before `confirm`, the override unmounts itself after ~180 s and
+#     the TV heals.
 #
 # Subcommands:
-#   start      bring the resolver up, set Nameservers=127.0.0.2 in
-#              connman's service settings, nudge connmand via SIGHUP
-#   stop       kill the resolver and restore the connman settings file
-#   status     show what's running, what's hooked in, upstream
+#   start      bring the resolver up, then apply + confirm the override
+#              (what oyg layer 4 / the boot hook call; permanent)
+#   apply [--keep]
+#              mount the resolv.conf override. Arms the auto-revert timer;
+#              `--keep` (or the `confirm` subcommand) disarms it.
+#   ensure     idempotent re-assert (used by the watchdog): rewrite the
+#              managed file in place, re-mount if the bind is gone
+#   confirm    disarm the auto-revert timer (make the override permanent)
+#   revert     undo the resolv.conf override (umount). Resolver stays up.
+#   stop       full teardown: watchdog, timer, override, resolver
+#   status     show what is running / hooked in / upstream
 #   log        tail the audit log (non-blocking if no resolver yet)
-#   test       issue live nslookup-style queries against 127.0.0.2
-#              showing blocked + allowed answers + audit lines
-#   revert     explicit rollback of the connman settings file from backup
+#   test [domain ...]
+#              live nslookup-style probes against 127.0.0.2
 #
-# All subcommands are idempotent (re-running is safe).
-#
-# State keys (under OYG_ROOT/state, written via lib/common.sh):
-#   dns.applied=1                       resolver is live on 127.0.0.2:53
-#   dns.service_dir=/var/lib/connman/.. connman service dir we touched
-#   dns.original_settings=<path>         backup of pre-override settings
-#   dns.connmand_pid=<pid>               last-known connmand pid (HUP)
+# State keys (under $OYG_ROOT/state, written via lib/common.sh):
+#   dns.applied=1          resolv.conf override in place
+#   dns.upstream=<ip>      real upstream used as fallback nameserver
 #
 # Required:
-#   python3 on PATH; connmanctl at /usr/bin/connmanctl;
-#   /var/lib/connman/<service>/settings writeable by us.
-#
-# NOTES:
-#   - We never restart connmand in this script. If we cannot make
-#     connmand re-read the settings file after we add Nameservers=, we
-#     STOP and report (so the operator can investigate) instead of
-#     risking `systemctl restart connman` which can drop the Wi-Fi IP
-#     and there is no telnet lifeline (webosbrew telnetd is disabled by
-#     the policy module).
-#   - `start` and `stop` are no-ops if the requested state already
-#     holds. They never re-clobber a good backup.
+#   python3 on PATH. All subcommands are idempotent (re-running is safe).
+#   The auto-revert pid lives at $OYG_ROOT/dns-autorevert.pid.
 
 set -u
 
@@ -66,8 +85,6 @@ else
 fi
 
 CONNMANCTL=/usr/bin/connmanctl
-CONNMAN_SERVICES_DIR=/var/lib/connman
-AUTO_UPSTREAM_DIR=/var/lib/misc
 
 DNS_BIND=127.0.0.2
 DNS_PORT=53
@@ -75,6 +92,10 @@ AUDIT_LOG="$OYG_ROOT/dns-audit.log"
 HOSTS_FILE="$OYG_ROOT/hosts"
 STATE_PID="$OYG_ROOT/dns.pid"
 WATCHDOG_PID="$OYG_ROOT/watch-dns.pid"
+TIMER_PID="$OYG_ROOT/dns-autorevert.pid"
+RESOLV_TARGET=/etc/resolv.conf
+RESOLV_SRC="$OYG_ROOT/resolv.conf.sinkhole"
+AUTO_REVERT_SECS=${OYG_DNS_AUTO_REVERT:-180}
 
 log_dns() { log "dns: $*"; }
 ok_dns()  { ok "dns: $*"; }
@@ -90,45 +111,15 @@ require_root() {
     fi
 }
 
-ensure_dirs() { ensure_dirs; }
+# NOTE: ensure_dirs() is provided by lib/common.sh (sourced above). Do NOT
+# define a local stub here — an `ensure_dirs() { ensure_dirs; }` shadow
+# recurses until the shell segfaults (observed: rc=139).
 
-# Pick the connman service directory that is currently connected.
-# Returns the path on stdout; empty string if none.
-_active_connman_service_dir() {
-    [ -d "$CONNMAN_SERVICES_DIR" ] || return 0
-    if have "$CONNMANCTL"; then
-        out=$("$CONNMANCTL" services 2>/dev/null) || return 0
-        # Lines look like: "*AO Wired" or "*A  wifi_…_managed_psk …"
-        # Pick the first line that contains '*'.
-        svc=$("$CONNMANCTL" services 2>/dev/null \
-            | grep '^\*' \
-            | awk '{
-                s = ""; i = 1
-                # Skip leading "*AO " or "*A " tokens to find the first quoted service.
-                while (i <= NF) {
-                    if ($i ~ /^[*]/) { i++; continue }
-                    if (substr($i, 1, 1) == " ") { i++; continue }
-                    s = $i; break
-                }
-                if (length(s) > 0) { print s; exit }
-            }')
-    else
-        svc=""
-    fi
-    if [ -n "$svc" ]; then
-        d="$CONNMAN_SERVICES_DIR/$svc"
-        [ -d "$d" ] && printf '%s' "$d" && return 0
-    fi
-    # Fall back to the first service dir that already has a settings file.
-    for d in "$CONNMAN_SERVICES_DIR"/*/; do
-        [ -f "$d/settings" ] && printf '%s' "$d" && return 0
-    done
-    return 0
-}
-
-# Discover the upstream resolver. Mirrors dnssink.py's discovery but we
-# also allow the operator to override via env / CLI. Echoes the IP on
-# stdout and reports the source.
+# Discover the UPSTREAM resolver (the fallback nameserver; NOT something we
+# ever point connmand at). Mirrors dnssink.py's discovery: connectionmanager
+# getStatus -> dns1, then dns2. Do NOT re-introduce "the first IPv4 in the
+# blob" — that yields the netmask 255.255.255.0, which is not a resolver.
+# Echoes "<ip> <source>" on stdout.
 discover_upstream() {
     ip=""
     src=""
@@ -146,12 +137,21 @@ discover_upstream() {
         out=$(luna-send -n 1 -f \
             'luna://com.webos.service.connectionmanager/getStatus' \
             '{}' </dev/null 2>/dev/null) || out=""
-        if [ -n "$out" ] && printf '%s' "$out" | grep -q '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}'; then
+        if [ -n "$out" ]; then
+            # NB: getStatus contains SEVERAL IPv4-shaped values — netmask,
+            # ipAddress, gateway, dns1, dns2 — and `netmask` comes first in
+            # the JSON. Grabbing "the first IPv4 in the blob" therefore
+            # yields 255.255.255.0, which is not a resolver: forwarding to
+            # it would black-hole every lookup on the device. Only dns1 /
+            # dns2 are resolvers; take those, in that order.
             ip=$(printf '%s' "$out" \
-                | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+                | sed -n 's/.*"dns1"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
+                | head -n 1)
+            [ -z "$ip" ] && ip=$(printf '%s' "$out" \
+                | sed -n 's/.*"dns2"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
                 | head -n 1)
             if [ -n "$ip" ]; then
-                src="luna-send"
+                src="luna-send(dns1/dns2)"
                 printf '%s %s\n' "$ip" "$src"
                 return 0
             fi
@@ -165,32 +165,6 @@ discover_upstream() {
         return 0
     fi
     return 1
-}
-
-# Returns the PID of connmand or empty.
-connman_pid() {
-    if [ -r /var/run/connmand.pid ]; then
-        pid=$(cat /var/run/connmand.pid 2>/dev/null || true)
-        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
-            printf '%s' "$pid"
-            return 0
-        fi
-    fi
-    if have pidof; then
-        pid=$(pidof connmand 2>/dev/null | awk '{print $1; exit}') || true
-        if [ -n "${pid:-}" ]; then
-            printf '%s' "$pid"
-            return 0
-        fi
-    fi
-    if have pgrep; then
-        pid=$(pgrep -x connmand 2>/dev/null | head -n 1) || true
-        if [ -n "${pid:-}" ]; then
-            printf '%s' "$pid"
-            return 0
-        fi
-    fi
-    return 0
 }
 
 # Returns 0 if the resolver is listening on 127.0.0.2:53 (responds to a
@@ -207,11 +181,163 @@ resolver_alive() {
         # Last-resort: liveness = process is up.
         return 0
     fi
-    out=$(nslookup -port=53 -timeout=1 example.com "$DNS_BIND" 2>&1) || true
+    # Probe a BLOCKED name — the answer (0.0.0.0/::) is generated locally
+    # and is instant, unlike a forwarded name which waits on the upstream.
+    out=$(nslookup -port=53 -timeout=1 es.nextlgsdp.com "$DNS_BIND" 2>&1) || true
     if printf '%s' "$out" | grep -Eq 'Address: '; then
         return 0
     fi
     return 1
+}
+
+# True resolv.conf path after following symlinks (/etc/resolv.conf ->
+# /var/lib/misc/resolv.conf on this device; the bind mount lands on the
+# resolved path and mountinfo records THAT path).
+_resolv_real_target() {
+    p=$RESOLV_TARGET
+    if have readlink && r=$(readlink -f "$p" 2>/dev/null) && [ -n "$r" ]; then
+        printf '%s' "$r"
+        return 0
+    fi
+    n=0
+    while [ -L "$p" ] && [ "$n" -lt 10 ]; do
+        t=$(readlink "$p" 2>/dev/null) || break
+        case "$t" in
+            /*) p=$t ;;
+            *)  p=$(dirname "$p")/$t ;;
+        esac
+        n=$((n + 1))
+    done
+    printf '%s' "$p"
+}
+
+# 0 if /etc/resolv.conf (or its resolved target) is currently a mount
+# point. Field-based check (mountinfo field 5 / mounts field 2) — never a
+# literal /dev/null grep.
+_resolv_is_mounted() {
+    [ -r /proc/self/mountinfo ] || [ -r /proc/mounts ] || return 1
+    t1=$RESOLV_TARGET
+    t2=$(_resolv_real_target)
+    if [ -r /proc/self/mountinfo ]; then
+        awk -v a="$t1" -v b="$t2" '{ if ($5 == a || $5 == b) m = 1 }
+            END { exit (m ? 0 : 1) }' /proc/self/mountinfo && return 0
+    fi
+    if [ -r /proc/mounts ]; then
+        awk -v a="$t1" -v b="$t2" '{ if ($2 == a || $2 == b) m = 1 }
+            END { exit (m ? 0 : 1) }' /proc/mounts && return 0
+    fi
+    return 1
+}
+
+# 0 if the live resolv.conf still names our sinkhole first (ConnMan
+# regenerates the file, which clobbers it — the watchdog re-asserts).
+_resolv_content_ok() {
+    grep -q '^nameserver[[:space:]]*127\.0\.0\.2' "$RESOLV_TARGET" 2>/dev/null
+}
+
+# Build the managed resolv.conf: our sinkhole FIRST, real upstream SECOND.
+# Written IN PLACE (truncate + rewrite, never mv) so a live bind mount over
+# it keeps showing the new content without re-mounting.
+_write_resolv_src() {
+    up=$1
+    want="$RESOLV_SRC.want.$$"
+    {
+        printf '# own-your-glass DNS sinkhole (managed file; bind-mounted over /etc/resolv.conf)\n'
+        printf '# primary: on-device sinkhole resolver. fallback: DHCP-learned upstream,\n'
+        printf '# keeps DNS alive if the resolver dies.\n'
+        printf 'nameserver %s\n' "$DNS_BIND"
+        printf 'nameserver %s\n' "$up"
+    } >"$want" 2>/dev/null || {
+        rm -f "$want" 2>/dev/null || true
+        return 1
+    }
+    if cmp -s "$want" "$RESOLV_SRC" 2>/dev/null; then
+        rm -f "$want" 2>/dev/null || true
+        return 0
+    fi
+    if cat "$want" >"$RESOLV_SRC" 2>/dev/null; then
+        rm -f "$want" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$want" 2>/dev/null || true
+    return 1
+}
+
+# Probe the resolver DIRECTLY on 127.0.0.2 with a blocked name (answer must
+# be 0.0.0.0 / ::) — proves it is live before resolv.conf points at it.
+_probe_resolver_direct() {
+    have nslookup || return 0
+    out=$(nslookup -port=53 -timeout=2 es.nextlgsdp.com "$DNS_BIND" 2>&1) || true
+    case "$out" in
+        *0.0.0.0*|*::*) return 0 ;;
+    esac
+    return 1
+}
+
+# Verify THROUGH THE DEFAULT PATH (i.e. the resolver the box actually
+# uses): blocked name -> 0.0.0.0/::, allowed name -> real IP.
+_verify_default_path() {
+    have nslookup || return 0
+    bl=$(nslookup -timeout=2 es.nextlgsdp.com 2>&1) || true
+    case "$bl" in
+        *0.0.0.0*|*::*) : ;;
+        *) return 1 ;;
+    esac
+    al=$(nslookup -timeout=2 www.youtube.com 2>&1) || true
+    for a in $(printf '%s\n' "$al" | grep 'Address:' |
+        sed 's/.*Address:[[:space:]]*//' | cut -d'#' -f1 | tr -d ' '); do
+        case "$a" in
+            127.*|0.0.0.0|::|"") continue ;;
+            *.*.*.*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Arm the auto-revert timer: a detached job that unmounts the override
+# after ~180 s unless disarmed. If anything goes wrong and the shell dies,
+# the TV heals itself.
+_arm_autorevert() {
+    _cancel_autorevert
+    nohup sh "$0" _autorevert "$AUTO_REVERT_SECS" \
+        </dev/null >>"$OYG_ROOT/dns.log" 2>&1 &
+    tp=$!
+    printf '%s\n' "$tp" >"$TIMER_PID" 2>/dev/null || true
+    ok_dns "auto-revert armed: override auto-unmounts in ${AUTO_REVERT_SECS}s unless confirmed (pid $tp)"
+}
+
+_cancel_autorevert() {
+    [ -r "$TIMER_PID" ] || return 0
+    tp=$(cat "$TIMER_PID" 2>/dev/null || true)
+    rm -f "$TIMER_PID" 2>/dev/null || true
+    if [ -n "${tp:-}" ] && [ "$tp" != "$$" ] && kill -0 "$tp" 2>/dev/null; then
+        kill -TERM "$tp" 2>/dev/null || true
+        ok_dns "auto-revert disarmed (pid $tp)"
+    fi
+    return 0
+}
+
+_autorevert() {
+    secs=${1:-$AUTO_REVERT_SECS}
+    printf '%s\n' "$$" >"$TIMER_PID" 2>/dev/null || true
+    sleep "$secs" 2>/dev/null || sleep 180
+    rm -f "$TIMER_PID" 2>/dev/null || true
+    if [ "$(state_get dns.applied 2>/dev/null)" = "1" ]; then
+        warn_dns "auto-revert timer fired: undoing the resolv.conf override"
+        cmd_revert
+    else
+        log_dns "auto-revert timer fired: no override applied, nothing to undo"
+    fi
+    exit 0
+}
+
+_spawn_watchdog() {
+    if [ -r "$WATCHDOG" ] && [ ! -r "$WATCHDOG_PID" ]; then
+        nohup sh "$WATCHDOG" >>"$OYG_ROOT/dns.log" 2>&1 &
+        # nohup returns; let the daemon write its own pid file.
+        sleep 0.3
+        ok_dns "watchdog spawned"
+    fi
 }
 
 ##############################################################################
@@ -220,22 +346,27 @@ resolver_alive() {
 
 usage() {
     cat <<EOF
-dns.sh — on-device DNS sinkhole operator
+dns.sh — on-device DNS sinkhole operator (resolv.conf bind-mount route)
 
 Usage:
-  scripts/dns.sh start      # bring the resolver up + hook it into connman
-  scripts/dns.sh stop       # tear it down + restore connman settings
-  scripts/dns.sh status     # print what is live
-  scripts/dns.sh log        # tail the audit log
-  scripts/dns.sh test [domain] [domain ...]
-                           # live nslookup-style probes against 127.0.0.2
-  scripts/dns.sh revert     # restore connman settings from backup
+  scripts/dns.sh start              # resolver up + apply + confirm (permanent)
+  scripts/dns.sh apply [--keep]     # mount the resolv.conf override; auto-revert
+                                    # armed unless --keep (or run: confirm)
+  scripts/dns.sh ensure             # idempotent re-assert (watchdog)
+  scripts/dns.sh confirm            # disarm the auto-revert timer
+  scripts/dns.sh revert             # undo the override (umount), resolver stays up
+  scripts/dns.sh stop               # full teardown (watchdog, override, resolver)
+  scripts/dns.sh status             # print what is live
+  scripts/dns.sh log                # tail the audit log
+  scripts/dns.sh test [domain ...]  # live probes against 127.0.0.2
 
 State keys managed under \$OYG_ROOT/state:
-  dns.applied          1 if resolver is on 127.0.0.2:53
-  dns.service_dir      connman service dir we last touched
-  dns.original_settings backup of the connman settings file (kept forever)
-  dns.connmand_pid     last-known connmand pid
+  dns.applied        1 if the resolv.conf override is in place
+  dns.upstream       real upstream used as the fallback nameserver
+
+Auto-revert: every apply arms a background job that unmounts the override
+after ~180 s (OYG_DNS_AUTO_REVERT) unless disarmed by 'confirm' / start.
+Never signals, reloads or restarts connmand (see the post-mortem above).
 EOF
 }
 
@@ -274,132 +405,177 @@ cmd_start() {
         fi
         printf '%s\n' "$pid" >"$STATE_PID"
         ok_dns "resolver started: $DNS_BIND:$DNS_PORT pid=$pid upstream=$upstream"
+
+        # Prove it answers BEFORE pointing resolv.conf at it.
+        if ! _probe_resolver_direct; then
+            err_dns "resolver up but NOT answering blocked queries on $DNS_BIND:$DNS_PORT — aborting before touching resolv.conf"
+            kill -TERM "$pid" 2>/dev/null || true
+            rm -f "$STATE_PID" 2>/dev/null || true
+            return 1
+        fi
+        ok_dns "resolver verified answering on $DNS_BIND:$DNS_PORT (blocked -> 0.0.0.0/::)"
     fi
 
-    # If the connman override is already applied, do nothing more.
-    if [ "$(state_get dns.applied 2>/dev/null)" = "1" ]; then
-        ok_dns "connman override already applied"
-        return 0
-    fi
+    cmd_apply --keep
+}
 
-    # Find the active connman service dir; bail safely if we cannot.
-    svc=$(_active_connman_service_dir)
-    if [ -z "$svc" ] || [ ! -f "$svc/settings" ]; then
-        err_dns "could not locate an active connman service settings file"
-        err_dns "  expected $CONNMAN_SERVICES_DIR/<service>/settings"
-        err_dns "  is connman running?"
+cmd_apply() {
+    keep=0
+    case "${1:-}" in
+        --keep) keep=1 ;;
+    esac
+    require_root
+
+    # The resolver MUST be live before resolv.conf points at it.
+    if ! resolver_alive; then
+        err_dns "resolver is not answering on $DNS_BIND:$DNS_PORT — refusing to point resolv.conf at it"
+        err_dns "  run: scripts/dns.sh start"
         return 1
     fi
-    settings="$svc/settings"
-    state_put dns.service_dir "$svc"
 
-    # Back up the settings file ONCE (never overwrite a good backup).
-    bak="$OYG_BACKUP/connman-$(printf '%s' "$svc" | tr '/' '_').orig"
-    if [ ! -e "$bak" ]; then
-        cp -p "$settings" "$bak" 2>/dev/null || {
-            err_dns "cannot back up $settings to $bak"
-            return 1
-        }
-        state_put dns.original_settings "$bak"
-        ok_dns "backed up $settings -> $bak"
-    else
-        ok_dns "backup already present at $bak"
+    up=$(state_get dns.upstream 2>/dev/null || true)
+    if [ -z "$up" ]; then
+        if up_pair=$(discover_upstream) && [ -n "${up_pair%% *}" ]; then
+            up=${up_pair%% *}
+        else
+            err_dns "cannot discover the real upstream — not applying the override"
+            return 2
+        fi
+    fi
+    state_put dns.upstream "$up"
+
+    ensure_dirs
+    if ! _write_resolv_src "$up"; then
+        err_dns "cannot write $RESOLV_SRC"
+        return 1
     fi
 
-    # Idempotent: if Nameservers=127.0.0.2; is already present, do nothing.
-    if grep -q '^[[:space:]]*Nameservers=127\.0\.0\.2;' "$settings"; then
-        ok_dns "Nameservers=127.0.0.2; already in $settings"
-    else
-        # Append. ConnMan's value is a ;-separated list; 127.0.0.2 is the
-        # primary to keep our sinkhole first.
-        # Use awk to handle the append + lock-friendly temp file.
-        tmp=$(mktemp 2>/dev/null) || {
-            err_dns "cannot create temp file for settings edit"
-            return 1
-        }
-        if cp -p "$settings" "$tmp"; then
-            printf 'Nameservers=127.0.0.2;\n' >>"$tmp"
-            if mv -f "$tmp" "$settings" 2>/dev/null; then
-                ok_dns "appended Nameservers=127.0.0.2; to $settings"
-            else
-                rm -f "$tmp"
-                err_dns "cannot replace $settings (mv failed — restoring from backup)"
-                cp -p "$bak" "$settings" 2>/dev/null || true
-                return 1
+    if _resolv_is_mounted; then
+        ok_dns "resolv.conf override already mounted"
+        if ! _resolv_content_ok; then
+            warn_dns "override mounted but content clobbered (ConnMan regenerated resolv.conf) — re-writing in place"
+            _write_resolv_src "$up"
+            if ! _resolv_content_ok; then
+                warn_dns "content still wrong after re-write — unmounting and mounting fresh"
+                umount "$RESOLV_TARGET" 2>/dev/null \
+                    || umount "$(_resolv_real_target)" 2>/dev/null \
+                    || true
             fi
-        else
-            rm -f "$tmp"
-            err_dns "cannot stage $settings for edit"
-            return 1
         fi
     fi
 
-    # Nudge connmand.
-    pid=$(connman_pid)
-    if [ -n "${pid:-}" ]; then
-        if kill -HUP "$pid" 2>/dev/null; then
-            state_put dns.connmand_pid "$pid"
-            ok_dns "sent SIGHUP to connmand (pid $pid)"
+    if ! _resolv_is_mounted; then
+        # Arm the safety net FIRST, then mount.
+        _arm_autorevert
+        if mount --bind "$RESOLV_SRC" "$RESOLV_TARGET" 2>/dev/null; then
+            ok_dns "bind-mounted $RESOLV_SRC over $RESOLV_TARGET"
         else
-            warn_dns "could not SIGHUP connmand (pid $pid) — trying systemctl reload next"
+            err_dns "mount --bind failed — the TV keeps ConnMan's own resolv.conf; auto-revert is running"
+            return 1
         fi
-    elif have systemctl; then
-        if systemctl show connman.service -p ExecReload= 2>/dev/null \
-                | grep -q ExecReload=; then
-            if systemctl reload connman 2>/dev/null; then
-                ok_dns "systemctl reload connman succeeded"
-            else
-                warn_dns "systemctl reload connman failed (will leave settings in place)"
-            fi
-        else
-            warn_dns "connman.service has no ExecReload= — settings written, will be picked up on its next config scan"
-        fi
-    else
-        warn_dns "could not find a connmand pid; settings are written, pid/connmand may pick them up on its own"
     fi
 
     state_put dns.applied "1"
-    ok_dns "applied"
 
-    # Spawn the watchdog (unless one is already running). It probes the
-    # resolver every PROBE_INTERVAL seconds; on death it restarts; if
-    # 3 restarts fail it auto-rolls back the connman settings so the TV
-    # is never left without DNS.
-    if [ -r "$WATCHDOG" ] && [ ! -r "$WATCHDOG_PID" ]; then
-        nohup sh "$WATCHDOG" >>"$OYG_ROOT/dns.log" 2>&1 &
-        # nohup returns; let the daemon write its own pid file.
-        sleep 0.3
-        ok_dns "watchdog spawned"
+    if ! _verify_default_path; then
+        err_dns "default-path DNS check FAILED after mounting — reverting immediately"
+        cmd_revert
+        return 1
+    fi
+    ok_dns "default-path DNS verified (blocked -> 0.0.0.0/::, allowed -> real IP)"
+
+    if [ "$keep" = "1" ]; then
+        _cancel_autorevert
+        ok_dns "override confirmed (auto-revert disarmed)"
+    else
+        warn_dns "override is TENTATIVE — auto-revert will undo it in ${AUTO_REVERT_SECS}s unless you run: scripts/dns.sh confirm"
     fi
 
+    _spawn_watchdog
     return 0
+}
+
+cmd_ensure() {
+    require_root
+    [ "$(state_get dns.applied 2>/dev/null)" = "1" ] || return 0
+    up=$(state_get dns.upstream 2>/dev/null || true)
+    if [ -z "$up" ]; then
+        if up_pair=$(discover_upstream) && [ -n "${up_pair%% *}" ]; then
+            up=${up_pair%% *}
+            state_put dns.upstream "$up"
+        else
+            warn_dns "cannot re-assert the override (no upstream discovered)"
+            return 1
+        fi
+    fi
+    ensure_dirs
+    _write_resolv_src "$up" || return 1
+    if _resolv_is_mounted; then
+        _resolv_content_ok && return 0
+        # Mounted but clobbered — rewrite in place (same inode, no re-mount).
+        _write_resolv_src "$up"
+        _resolv_content_ok && return 0
+        # A stale/foreign mount: unmount and mount fresh.
+        warn_dns "resolv.conf mount present but content wrong — unmounting and re-mounting"
+        umount "$RESOLV_TARGET" 2>/dev/null \
+            || umount "$(_resolv_real_target)" 2>/dev/null \
+            || true
+    fi
+    _write_resolv_src "$up" || return 1
+    if ! _resolv_is_mounted; then
+        if mount --bind "$RESOLV_SRC" "$RESOLV_TARGET" 2>/dev/null; then
+            ok_dns "re-asserted: bind-mounted $RESOLV_SRC over $RESOLV_TARGET"
+        else
+            warn_dns "re-mount failed — resolv.conf is ConnMan's own until the next ensure"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+cmd_confirm() {
+    require_root
+    _cancel_autorevert
+    ok_dns "override confirmed (auto-revert disarmed)"
+}
+
+cmd_revert() {
+    require_root
+    _cancel_autorevert
+    rv=0
+    if _resolv_is_mounted; then
+        if umount "$RESOLV_TARGET" 2>/dev/null \
+            || umount "$(_resolv_real_target)" 2>/dev/null; then
+            ok_dns "unmounted the resolv.conf override — TV back on ConnMan's own resolv.conf"
+        else
+            err_dns "umount failed — override still in place"
+            rv=1
+        fi
+    else
+        ok_dns "no resolv.conf override mounted"
+    fi
+    state_drop dns.applied
+    state_drop dns.upstream
+    return $rv
 }
 
 cmd_stop() {
     require_root
 
-    # Restore connman settings first so we never leave the TV without
-    # resolvable DNS while the resolver is going down.
-    svc=$(state_get dns.service_dir)
-    bak=$(state_get dns.original_settings)
-    if [ -n "$svc" ] && [ -f "$svc/settings" ] && [ -n "$bak" ] && [ -e "$bak" ]; then
-        if cp -p "$bak" "$svc/settings" 2>/dev/null; then
-            ok_dns "restored $svc/settings from $bak"
-        else
-            err_dns "cannot restore $svc/settings from $bak"
+    # Stop watchdog.
+    if [ -r "$WATCHDOG_PID" ]; then
+        wpid=$(cat "$WATCHDOG_PID" 2>/dev/null || true)
+        if [ -n "${wpid:-}" ] && kill -0 "$wpid" 2>/dev/null; then
+            kill -TERM "$wpid" 2>/dev/null || true
+            ok_dns "stopped watchdog (pid $wpid)"
         fi
-        pid=$(connman_pid)
-        if [ -n "${pid:-}" ]; then
-            kill -HUP "$pid" 2>/dev/null \
-                && ok_dns "SIGHUP connmand (pid $pid)" \
-                || warn_dns "could not SIGHUP connmand"
-        fi
-        state_drop dns.service_dir
-        state_drop dns.original_settings
-    else
-        ok_dns "no connman override to revert (state empty or backup missing)"
+        rm -f "$WATCHDOG_PID" 2>/dev/null || true
     fi
 
+    _cancel_autorevert
+    cmd_revert || true
+
+    # Stop the resolver.
     if [ -r "$STATE_PID" ]; then
         pid=$(cat "$STATE_PID" 2>/dev/null || true)
         if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
@@ -418,18 +594,8 @@ cmd_stop() {
         ok_dns "no resolver pid file"
     fi
 
-    # Stop watchdog.
-    if [ -r "$WATCHDOG_PID" ]; then
-        wpid=$(cat "$WATCHDOG_PID" 2>/dev/null || true)
-        if [ -n "${wpid:-}" ] && kill -0 "$wpid" 2>/dev/null; then
-            kill -TERM "$wpid" 2>/dev/null || true
-            ok_dns "stopped watchdog (pid $wpid)"
-        fi
-        rm -f "$WATCHDOG_PID" 2>/dev/null || true
-    fi
-
     state_drop dns.applied
-    state_drop dns.connmand_pid
+    state_drop dns.upstream
     ok_dns "stopped"
 }
 
@@ -446,26 +612,26 @@ cmd_status() {
         fi
     fi
 
-    svc=$(state_get dns.service_dir)
-    bak=$(state_get dns.original_settings)
-    if [ -n "$svc" ] && [ -f "$svc/settings" ] && [ -n "$bak" ] && [ -e "$bak" ]; then
-        if grep -q '^[[:space:]]*Nameservers=127\.0\.0\.2;' "$svc/settings"; then
-            print_status OK "connman settings has Nameservers=127.0.0.2; ($svc/settings)"
+    if [ "$(state_get dns.applied 2>/dev/null)" = "1" ]; then
+        if _resolv_is_mounted; then
+            if _resolv_content_ok; then
+                print_status OK "resolv.conf override mounted + carries nameserver $DNS_BIND first ($(_resolv_real_target))"
+            else
+                print_status PARTIAL "resolv.conf override mounted but content clobbered (watchdog should re-assert)"
+            fi
         else
-            print_status FAIL "connman settings MISSING Nameservers=127.0.0.2; ($svc/settings)"
+            print_status FAIL "dns.applied=1 but no resolv.conf override mount (re-apply: scripts/dns.sh start)"
         fi
-        print_status OK "original settings backed up at $bak"
-    elif [ "$(state_get dns.applied 2>/dev/null)" = "1" ]; then
-        print_status PARTIAL "dns.applied=1 but service_dir/original_settings absent"
+        up=$(state_get dns.upstream 2>/dev/null || true)
+        if [ -n "$up" ]; then
+            print_status OK "upstream fallback=$up (also used by the resolver)"
+        fi
+        if [ -r "$TIMER_PID" ]; then
+            tp=$(cat "$TIMER_PID" 2>/dev/null || true)
+            print_status PARTIAL "auto-revert armed (pid ${tp:-?}) — run 'scripts/dns.sh confirm' to make the override permanent"
+        fi
     else
-        print_status N/A "no connman override in place"
-    fi
-
-    cm_pid=$(connman_pid)
-    if [ -n "$cm_pid" ]; then
-        print_status OK "connmand pid=$cm_pid (SIGHUP-friendly; no restart needed)"
-    else
-        print_status N/A "connmand pid not found"
+        print_status N/A "no resolv.conf override applied"
     fi
 
     if [ -f "$AUDIT_LOG" ]; then
@@ -523,43 +689,24 @@ cmd_test() {
     fi
 }
 
-cmd_revert() {
-    require_root
-    svc=$(state_get dns.service_dir)
-    bak=$(state_get dns.original_settings)
-    if [ -z "$svc" ] || [ -z "$bak" ] || [ ! -e "$bak" ]; then
-        err_dns "no original_settings backup to revert to (state: svc='$svc' bak='$bak')"
-        return 1
-    fi
-    if [ ! -f "$svc/settings" ]; then
-        err_dns "settings file missing: $svc/settings — cannot revert"
-        return 1
-    fi
-    if cp -p "$bak" "$svc/settings" 2>/dev/null; then
-        ok_dns "restored $svc/settings from $bak"
-    else
-        err_dns "cp $bak $svc/settings failed"
-        return 1
-    fi
-    pid=$(connman_pid)
-    if [ -n "${pid:-}" ]; then
-        kill -HUP "$pid" 2>/dev/null && ok_dns "SIGHUP connmand (pid $pid)" \
-            || warn_dns "SIGHUP failed"
-    fi
-    rm -f "$STATE_PID" 2>/dev/null || true
-    ok_dns "reverted (resolver still running if it was; use 'stop' for full teardown)"
-}
-
 main() {
+    if ! oyg_guard_connman_route "$OYG_HERE/dns.sh" "$OYG_HERE/watch-dns.sh"; then
+        err_dns "ConnMan signal/reload pattern detected — refusing to run. See the post-mortem in this file."
+        exit 1
+    fi
     sub=${1:-help}
     [ $# -gt 0 ] && shift || true
     case "$sub" in
-        start)  cmd_start ;;
-        stop)   cmd_stop ;;
-        status) cmd_status ;;
-        log)    cmd_log ;;
-        test)   cmd_test "$@" ;;
-        revert) cmd_revert ;;
+        start)      cmd_start ;;
+        apply)      cmd_apply "$@" ;;
+        ensure)     cmd_ensure ;;
+        confirm)    cmd_confirm ;;
+        revert)     cmd_revert ;;
+        stop)       cmd_stop ;;
+        status)     cmd_status ;;
+        log)        cmd_log ;;
+        test)       cmd_test "$@" ;;
+        _autorevert) _autorevert "${1:-$AUTO_REVERT_SECS}" ;;
         -h|--help|help) usage ;;
         *) err_dns "unknown subcommand: $sub"; usage; exit 64 ;;
     esac

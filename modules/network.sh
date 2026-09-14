@@ -398,10 +398,18 @@ mod_network_layer3_restore() {
 }
 
 # -----------------------------------------------------------------------------
-# Layer 4 — DNS sinkhole resolver on 127.0.0.2:53 (wired in as ConnMan's
-# upstream; addresses the resolver-bypass gap that lets webOS daemons
-# resolve blocked domains even after /etc/hosts is bind-mounted; see
-# docs/FINDINGS.md F14g and README "Network module" section).
+# Layer 4 — DNS sinkhole resolver on 127.0.0.2:53, hooked in via a
+# bind-mount over /etc/resolv.conf (NOT via ConnMan). The ConnMan route —
+# editing /var/lib/connman/<svc>/settings and nudging connmand — took this
+# TV off the network for ~30 minutes (see the post-mortem in scripts/dns.sh);
+# this toolkit NEVER signals, reloads or restarts connmand. The managed
+# resolv.conf lists 127.0.0.2 first and the real upstream as a fallback, so
+# DNS survives even if the resolver dies. Start-up ordering: dns.sh starts
+# and verifies the resolver BEFORE pointing resolv.conf at it, and an
+# auto-revert timer (default 180 s) unmounts the override if an apply is
+# never confirmed. Addresses the resolver-bypass gap that lets webOS
+# daemons resolve blocked domains even after /etc/hosts is bind-mounted;
+# see docs/FINDINGS.md F14g.
 #
 # Why layer 4 lives here: the resolver's source-of-truth blocklist is
 # `$OYG_ROOT/hosts` — the same file layer 1 generates from
@@ -444,7 +452,7 @@ mod_network_layer4_harden() {
         warn "network: layer4 — scripts/dns.sh not found anywhere"
         return 0
     }
-    warn "network: layer4 — installing sinkhole resolver on $DNS_BIND:$DNS_PORT and wiring ConnMan upstream (no connmand restart)."
+    warn "network: layer4 — installing sinkhole resolver on $DNS_BIND:$DNS_PORT and bind-mounting /etc/resolv.conf over it (no connmand interaction; auto-revert timer on apply)."
     if [ "$OYG_DRY_RUN" = "1" ]; then
         printf 'DRY-RUN: sh %s start\n' "$bin"
         return 0
@@ -501,8 +509,8 @@ mod_network_harden() {
         && warn "network: OYG_DNS_OVERRIDE=1 — will rewrite /var/lib/misc/resolv.conf." \
         || ok "network: resolv.conf override disabled (set OYG_DNS_OVERRIDE=1 to enable)"
     [ "${OYG_DNS_RESOLVER:-0}" = "1" ] \
-        && warn "network: OYG_DNS_RESOLVER=1 — layer 4 (sinkhole resolver + ConnMan upstream) ENABLED." \
-        || ok "network: layer 4 disabled (set OYG_DNS_RESOLVER=1 to install the sinkhole resolver + ConnMan upstream)"
+        && warn "network: OYG_DNS_RESOLVER=1 — layer 4 (sinkhole resolver + /etc/resolv.conf override) ENABLED." \
+        || ok "network: layer 4 disabled (set OYG_DNS_RESOLVER=1 to install the sinkhole resolver + resolv.conf override)"
 
     mod_network_layer1_harden || warn "network: layer1 failed"
     mod_network_layer2_harden || warn "network: layer2 failed"
@@ -627,15 +635,13 @@ mod_network_status() {
         fi
     fi
 
-    # Layer 4 — DNS sinkhole resolver on 127.0.0.2:53 wired in as
-    # ConnMan's upstream. Reality check (never a state-key check, see
-    # the F14g finding): is the resolver actually answering on
-    # 127.0.0.2? Is the connman service settings file carrying
-    # Nameservers=127.0.0.2? Do we still have the original backup?
-    svc=$(state_get dns.service_dir)
-    if [ -z "$svc" ] || [ "$(state_get dns.applied)" != "1" ]; then
+    # Layer 4 — DNS sinkhole resolver on 127.0.0.2:53 with a resolv.conf
+    # override. Reality checks only (never a state-key check, see the
+    # F14g finding): is the resolver actually answering on 127.0.0.2,
+    # and does the live /etc/resolv.conf actually carry it?
+    if [ "$(state_get dns.applied)" != "1" ]; then
         if [ "$(state_get network.dns_resolver)" = "1" ]; then
-            print_status PARTIAL "network: layer4 — opted in but dns.applied!=1 (resolver/connman override missing)"
+            print_status PARTIAL "network: layer4 — opted in but dns.applied!=1 (resolv.conf override missing)"
         else
             print_status N/A "network: layer4 — not enabled (set OYG_DNS_RESOLVER=1)"
         fi
@@ -646,17 +652,16 @@ mod_network_status() {
         else
             print_status FAIL "network: layer4 — resolver NOT answering on $DNS_BIND:$DNS_PORT"
         fi
-        if [ -f "$svc/settings" ] \
-            && grep -q '^[[:space:]]*Nameservers=127\.0\.0\.2;' "$svc/settings"; then
-            print_status OK "network: layer4 — ConnMan service settings ($svc/settings) carries Nameservers=127.0.0.2;"
+        if grep -q '^nameserver[[:space:]]*127\.0\.0\.2' /etc/resolv.conf 2>/dev/null; then
+            print_status OK "network: layer4 — /etc/resolv.conf carries nameserver 127.0.0.2 first"
         else
-            print_status FAIL "network: layer4 — ConnMan service settings ($svc/settings) MISSING Nameservers=127.0.0.2;"
+            print_status FAIL "network: layer4 — /etc/resolv.conf does NOT carry nameserver 127.0.0.2"
         fi
-        bak=$(state_get dns.original_settings)
-        if [ -n "$bak" ] && [ -e "$bak" ]; then
-            print_status OK "network: layer4 — original connman settings backed up at $bak"
+        if grep -q ' /var/lib/misc/resolv.conf ' /proc/self/mountinfo 2>/dev/null \
+            || grep -q ' /etc/resolv.conf ' /proc/self/mountinfo 2>/dev/null; then
+            print_status OK "network: layer4 — resolv.conf override bind-mounted"
         else
-            print_status PARTIAL "network: layer4 — original connman settings backup missing"
+            print_status PARTIAL "network: layer4 — resolv.conf content set but not bind-mounted (watchdog re-asserts)"
         fi
     fi
 }

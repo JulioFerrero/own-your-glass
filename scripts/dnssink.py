@@ -19,14 +19,14 @@
 #     The TV then *connected* to that IP. Hosts-file blocking is therefore
 #     insufficient on this device. /etc/hosts also cannot express subdomains
 #     one-by-one — blocking `nextlgsdp.com` did nothing for `es.nextlgsdp.com`.
-#   - 127.0.0.2 is in the loopback /8 and is bindable (verified). ConnMan's
-#     proxy on 127.0.0.1:53 is not in our way; instead we *become* ConnMan's
-#     upstream by adding `Nameservers=127.0.0.2;` to its service settings
-#     (see scripts/dns.sh). This is "Variant 1" in the brief: no connmand
-#     restart, no `--nodnsproxy`, no `systemctl reload` we can't be sure
-#     of. If connmand needs nudging, `dns.sh` finds its pid and sends SIGHUP
-#     (ConnMan honours HUP for config reload); restart is the LAST resort
-#     and `dns.sh` will stop and report before doing it.
+#   - 127.0.0.2 is in the loopback /8 and is bindable (verified). The
+#     sinkhole is wired in by `scripts/dns.sh`, which bind-mounts a
+#     managed /etc/resolv.conf over the real one (127.0.0.2 first, the
+#     DHCP-learned upstream as fallback). The PREVIOUS route — editing
+#     connman's service settings and nudging connmand — took this TV off
+#     the network for ~30 minutes and is banned: this toolkit NEVER
+#     signals, reloads or restarts connmand (see the post-mortem in
+#     scripts/dns.sh).
 #
 # Why pure stdlib (no dnslib / twisted / etc): matches the convention set by
 # scripts/sniff.py (also pure stdlib) and means `python3 scripts/dnssink.py`
@@ -358,6 +358,21 @@ def recv_exact(sock, n, timeout):
     return out
 
 
+def _retxn(payload, txn_id):
+    """Rewrite the first two bytes of a DNS datagram to txn_id.
+
+    Cached datagrams (and, rarely, upstream replies) carry a foreign
+    transaction ID. Clients validate it and drop mismatches, so relayed and
+    cached responses must carry the current query's ID.
+    """
+    try:
+        if len(payload) >= 2 and struct.unpack_from(">H", payload, 0)[0] != txn_id:
+            return struct.pack(">H", txn_id) + payload[2:]
+    except struct.error:
+        pass
+    return payload
+
+
 class Cache:
     __slots__ = ("max_entries", "ttl_seconds", "lock", "data")
 
@@ -521,8 +536,12 @@ class Resolver:
             if cache_key is not None:
                 cached = self.cache.get(cache_key)
                 if cached is not None:
+                    # The cached datagram carries the transaction ID of the
+                    # query that populated it. Clients (BusyBox nslookup,
+                    # glibc) validate the ID and DROP a mismatch, so it must
+                    # be rewritten to the current query's ID on every hit.
                     self.counts["cache_hit"] += 1
-                    self.send(client, cached, proto)
+                    self.send(client, _retxn(cached, txn_id), proto)
                     return
             if self.rules.matches(qname):
                 resp, had_answer = build_blocked_answer(qname, qtype, txn_id)
@@ -545,12 +564,10 @@ class Resolver:
                     resp = forward_tcp(self.upstream, payload, self.upstream_timeout,
                                        port=self.upstream_port)
                 if resp is not None:
-                    try:
-                        r_txn = struct.unpack_from(">H", resp, 0)[0]
-                        if r_txn != txn_id:
-                            resp = resp[:2] + payload[2:4] + resp[4:]
-                    except struct.error:
-                        pass
+                    # Relay byte-for-byte, but with the CLIENT's transaction
+                    # ID (an upstream that answered a matching ID is passed
+                    # through unchanged; a mismatch is rewritten).
+                    resp = _retxn(resp, txn_id)
                     self.counts["forward"] += 1
                     if cache_key is not None:
                         self.cache.put(cache_key, resp)
@@ -846,6 +863,16 @@ def _discover_ls2():
         if m2:
             return m2.group(0)
     m = re.search(r'"nameservers"\s*:\s*\[\s*"([^"]+)"', out)
+    if m:
+        return _first_ipv4(m.group(1))
+    # Prefer the explicit "dns1"/"dns2" fields. The generic IPv4 scan below
+    # is a trap: getStatus also carries netmask / ipAddress / gateway, and
+    # `netmask` appears first, so "first IPv4 in the blob" is 255.255.255.0 —
+    # not a resolver. Forwarding to it black-holes every lookup.
+    m = re.search(r'"dns1"\s*:\s*"([^"]+)"', out)
+    if m:
+        return _first_ipv4(m.group(1))
+    m = re.search(r'"dns2"\s*:\s*"([^"]+)"', out)
     if m:
         return _first_ipv4(m.group(1))
     m = re.search(r'\d+\.\d+\.\d+\.\d+', out)

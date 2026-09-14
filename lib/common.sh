@@ -164,3 +164,38 @@ print_status() {
     state=$1; detail=$2
     printf '%-8s %s\n' "$state" "$detail"
 }
+
+# ---------------------------------------------------------------------------
+# oyg_guard_connman_route — fails loudly if the ConnMan signal/reload route
+# is reintroduced into the DNS scripts. See the post-mortem block in
+# scripts/dns.sh: editing connman's service settings and nudging connmand
+# took this TV off the network for ~30 minutes (`systemctl reload connman`
+# has NO ExecReload on this device, so systemd fell back to SIGHUP, which
+# tore the Wi-Fi down). The forbidden patterns are assembled from fragments
+# so this guard's own source never contains them contiguously. Any
+# POST-MORTEM block in a scanned file is stripped first, so the incident
+# write-up may quote the exact commands.
+# ---------------------------------------------------------------------------
+oyg_guard_connman_route() {
+    _g_hup="kill -""HUP"
+    _g_shup="kill -s ""HUP"
+    _g_allhup="killall -""HUP"
+    _g_reload="systemctl re""load connman"
+    _g_restart="systemctl re""start connman"
+    _g_ns="Nameservers=127.0.0.2"";"
+    _g_bad=0
+    for _g_f in "$@"; do
+        [ -r "$_g_f" ] || continue
+        _g_tmp=$(mktemp 2>/dev/null) || continue
+        sed '/^# ==== POST-MORTEM/,/^# ==== END POST-MORTEM/d' "$_g_f" \
+            >"$_g_tmp" 2>/dev/null || true
+        for _g_p in "$_g_hup" "$_g_shup" "$_g_allhup" "$_g_reload" "$_g_restart" "$_g_ns"; do
+            if grep -F -e "$_g_p" "$_g_tmp" >/dev/null 2>&1; then
+                err "guard: FORBIDDEN ConnMan pattern '$_g_p' found in $_g_f — the ConnMan route took this TV offline for ~30 min once; NEVER signal/reload/restart connmand (see scripts/dns.sh post-mortem)"
+                _g_bad=1
+            fi
+        done
+        rm -f "$_g_tmp" 2>/dev/null || true
+    done
+    [ "$_g_bad" = "0" ]
+}
