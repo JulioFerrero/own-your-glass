@@ -1,76 +1,12 @@
 OYG_MOD_VOICE=1
 
 # voice.sh — kill the LG Magic Remote's microphone pipeline.
-#
-# WHY THIS MODULE EXISTS (verified on the device)
-# -----------------------------------------------
-# The LG Magic Remote (HID_NAME="LGE MR25GA") ships its microphone audio
-# NOT as an ALSA capture device, but as a Bluetooth HID raw stream
-# arriving on /dev/hidraw0. Only the process `voiceinput_hidraw` reads
-# that node. The pipeline that turns those bytes into text + logs is:
-#
-#     /dev/hidraw0 (HID_NAME=LGE MR25GA, mic audio)
-#       --> voiceinput_hidraw
-#       --> voiceinput          --> voiceconductor
-#                                --> /tmp/app.voice.log
-#                                --> /tmp/var/log/messages (NL_*, user_utterance)
-#
-# Neutralising the ALSA capture PCMs (what the `mic` module does) does
-# NOT stop this path — there is no ALSA device involved. The mic button
-# is just a HID key event on the same /dev/hidraw0 channel as every
-# other remote button, and the audio bytes ride alongside it.
-#
+# Mic audio is a Bluetooth HID raw stream on /dev/hidraw0, read only by
+# voiceinput_hidraw (NOT ALSA — the `mic` module can't stop it); the fix
+# neutralises the consumers (→ voiceinput → voiceconductor) via chmod
+# 000 + bind /dev/null + TERM/KILL (F37).
 # WE DELIBERATELY DO NOT TOUCH /dev/hidraw*
-# -----------------------------------------
-# /dev/hidraw0 is the remote's raw HID channel. It carries BOTH:
-#   * the mic button key event (KEY_VOICE)
-#   * the mic audio bytes (consumed by voiceinput_hidraw)
-# These share the same HID stack as the remote's pointer, scrollwheel,
-# and every other button. Bind-mounting /dev/null over /dev/hidraw0
-# would silence the microphone AND break every Magic Remote button —
-# verified to be unacceptable (a TV with no working remote is much
-# worse than a TV with a working microphone).
-#
-# The fix is to neutralise the consumer PROCESSES instead:
-#   chmod 000 <binary>          — strip exec + read perms so even if a
-#                                  respawner tries to exec, it can't
-#   mount --bind /dev/null      — replace the binary itself so any
-#     <binary>                    process that does exec() reads zeros
-#                                  (and the kernel treats them as ENXIO
-#                                  when launched as an executable)
-#   pidof <name> + kill TERM/KILL — terminate any currently-running
-#                                  instance of the consumer
-#
-# All three consumers together = the full mic-to-text path. Removing
-# any one of them is sufficient to break capture+transcription; we
-# remove all three so even if one is re-extracted by an update, the
-# other two stay dead.
-#
-# EVIDENCE ON DEVICE
-# ------------------
-#   /dev/hidraw0  ->  HID_NAME=LGE MR25GA
-#                    only reader: voiceinput_hidraw
-#   Before       : voiceinput_hidraw / voiceinput / voiceconductor all
-#                  running; mic button press triggers capture + logs
-#                  (`NL_*`, `user_utterance`) within seconds.
-#   After        : all three processes GONE after kill+bind; mic button
-#                  press recorded only as
-#                    lginput2 NL_BUTTON_CLICK {"remote_type":"LGE
-#                    MR25GA","button_type":"KEY_VOICE"}
-#                  in /tmp/var/log/messages; ZERO `user_utterance`,
-#                  ZERO voice `NL_*` events; /tmp/app.voice.log stayed
-#                  at 0 bytes; no respawn after 10 s; remote BUTTONS
-#                  still work (input devices `LGE RCU`, `LGE M-RCU -
-#                  Builtin [0..2]`, `LGE Simple Premium` remain and
-#                  handle the rest of the HID channel); audio playback
-#                  unaffected (`paplay rc=0`).
-#
-# Targets:
-#   /usr/sbin/voiceinput_hidraw   — HID raw consumer; the source of the
-#                                   mic audio stream (must come first)
-#   /usr/sbin/voiceinput          — decoder/normaliser
-#   /usr/sbin/voiceconductor      — orchestrator (writes app.voice.log
-#                                   and the NL_* events to messages)
+# Details, verification history and findings: docs/FINDINGS.md (F37, F5, F38a)
 
 VOICE_TARGETS='
 /usr/sbin/voiceinput_hidraw
@@ -165,23 +101,9 @@ _mod_voice_kill() {
     return 1
 }
 
-# _mod_voice_harden_one <path>
-#   Apply the per-binary hardening steps (record mode, chmod 000, bind
-#   /dev/null).
-#
-#   I/O contract (important — the caller uses command substitution):
-#     stdout: a single status word "OK" / "FAIL" / "N/A" terminated by
-#             a newline. THIS IS THE ONLY LINE that goes to the caller's
-#             variable.
-#     stderr: every human-readable diagnostic (ok/warn/err/DRY-RUN).
-#             Stderr goes to the operator's terminal directly, so the
-#             caller does not need to redirect anything — the captured
-#             `status_line` is clean because command substitution only
-#             captures stdout.
-#   If both went to stdout, command substitution would capture the
-#   diagnostics too and the outer `case "$status_line"` would match the
-#   wrong word (the LAST line wins). The earlier version of this file
-#   hit exactly that bug; the stderr split is the fix.
+# _mod_voice_harden_one <path> — per-binary harden (record mode, chmod 000,
+# bind /dev/null). I/O contract: stdout = single status word OK/FAIL/N/A;
+# stderr = all diagnostics (past bug: mixing them broke the caller's case match).
 _mod_voice_harden_one() {
     path=$1
     if [ -z "$path" ]; then

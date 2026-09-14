@@ -1,60 +1,13 @@
 OYG_MOD_SERVICES=1
 
 # services.sh — stop a configurable list of background services.
-#
-# Why no `systemctl mask`: on this device /etc is a read-only overlay, so
-# `systemctl mask` ALWAYS fails with
-#   Failed to mask unit: File /etc/systemd/system/<x>.service already exists.
-# Even if mask were possible, /etc being RO means the mask symlink cannot
-# be created.
-#
-# Two service classes are treated differently:
-#
-#   1. systemd-managed — unit name == process name (or at least
-#      `systemctl stop <unit>` actually stops the process).
-#      Verified on this device: contentminer, objectdetection,
-#      adoverlay, acr, remotediag, com.webos.service.pushclient.
-#
-#   2. luna-launched — the process is launched on demand by ls-hubd
-#      (the LS2 hub daemon). The systemd unit is only a one-shot
-#      wrapper script that exits 0 immediately; it is always
-#      `inactive (dead)`, but the long-running process is spawned
-#      separately and is invisible to `systemctl`. Verified on this
-#      device: iot-client (LS2 service `com.webos.service.iotclient`).
-#      Stopping the unit does NOTHING to the running process — this is
-#      the bug the module used to have. Status would say `OK`
-#      (unit inactive) while the process was happily running.
-#
-# Our enforcement model is therefore per spec (id|unit|process):
-#   1. `systemctl stop <unit>` — works for class 1, harmless no-op
-#      (other than masking the misleading "inactive" claim) for class 2.
-#   2. `kill -TERM` the process (then `-9` if it survives a short
-#      sleep) — REQUIRED for class 2, since the unit stop is a no-op.
-#   3. Persist under $OYG_ROOT:
-#        services.stopped   — unit names to stop at every boot
-#        services.kill      — process names to kill at every boot
-#      Both idempotent. Both re-applied by the init.d boot hook.
-#   4. Report state as "unit stopped + process killed", never as
-#      "masked". For class 2, the unit was already inactive — we
-#      still record it so status can show it as boot-enforced.
-#
-# Spec format: one per line, fields separated by '|':
-#     <id>|<unit>|<process>
-# where <unit> is the systemd unit name (e.g. `foo.service` or
-# `com.webos.service.foo.service`) and <process> is the basename
-# of the long-running process to kill. <id> is a short human-readable
-# label used in status output.
-#
-# Default list (safe to disable on most users' TVs):
-#   contentminer      (F20) collects viewing stats / sends to LG
-#   objectdetection   (F22) on-device "what is on the screen" inference
-#   adoverlay         ad overlay renderer
-#   acr               automatic content recognition (Konograma markers)
-#   remotediag        remote diagnostics endpoint
-#
-# Aggressive opt-in (OYG_AGGRESSIVE=1) — breaks ThinQ/Home/voice/push:
-#   iot-client        luna-launched AWS IoT MQTT client (ThinQ plane)
-#   pushclient        com.webos.service.pushclient.service (ThinQ push)
+# `systemctl mask` is impossible (/etc read-only overlay — F14a); the model
+# is "stop unit + kill process + re-apply every boot" via $OYG_ROOT/
+# services.stopped + services.kill. Two classes: systemd-managed (stop
+# works) and luna-launched (unit is a dead one-shot — kill the PROCESS;
+# unit-stop alone used to lie in status; F33a). Spec <id>|<unit>|<process>.
+# Safe: contentminer (F20), objectdetection (F22), adoverlay, acr, remotediag;
+# aggressive: iot-client, pushclient (F33). Details: docs/FINDINGS.md (F20, F22, F33a, F14a)
 
 mod_services_safe_spec='
 contentminer|contentminer.service|contentminer

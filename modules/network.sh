@@ -1,41 +1,13 @@
 OYG_MOD_NETWORK=1
 
-# network.sh — three-layer outbound mitigations for telemetry / ad / cloud
-# domains on a rooted LG webOS TV.
-#
-# Layer 1 (primary): /etc/hosts overlay via bind-mount of a generated file.
-#                     For every blocklist domain we emit BOTH `0.0.0.0 <d>`
-#                     and `::1 <d>` — a hosts-file sinkhole that maps only
-#                     IPv4 leaves the resolver free to return any AAAA
-#                     record, which means AAAA-capable clients bypass the
+# network.sh — outbound mitigation (hosts sinkhole, blackhole routes, per-IP
+# routes, opt-in DNS sinkhole resolver); /etc read-only → bind-mount; no
+# iptables. Emit 0.0.0.0 AND ::1 per domain — AAAA-capable clients bypass the
 #                     block entirely (verified on device: criteo.com
 #                     resolved to 2620:12a:8000::4, doubleclick.net to
 #                     2a00:1450:4003:80b::200e through an IPv4-only
 #                     sinkhole). The IPv6 mirror closes that gap.
-# Layer 2:            blackhole hardcoded public resolvers + opt-in resolv.conf
-#                     override; mitigates daemons that bypass /etc/hosts.
-# Layer 3 (fallback): per-domain IP blackhole via `ip route add blackhole`,
-#                     for daemons that bypass libc `getent` entirely.
-#
-# Why no iptables: kernel module ip_tables is absent on this device.
-# Why no /etc edit: /etc is a read-only overlay.
-# Why bind-mount: mount --bind works on /etc on this device (verified).
-#
-# Blocklist sources (merged in this order, de-duplicated):
-#   $OYG_ROOT/etc/blocklist-upstream-safe.txt   (always)
-#   $OYG_ROOT/etc/blocklist-oyg.txt — SAFE      (always when OYG_NETWORK_BLOCK=1)
-#   $OYG_ROOT/etc/blocklist-oyg.txt — STRICT    (only when OYG_NETWORK_STRICT=1)
-#
-# Opt-in flags:
-#   OYG_NETWORK_BLOCK=1       enable the network module at all (default off)
-#   OYG_NETWORK_STRICT=1      include the STRICT (ThinQ / voice / AI / LG) domains
-#   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
-#   OYG_DNS_OVERRIDE=1        write /var/lib/misc/resolv.conf with a chosen
-#                             nameserver (default: current default gateway).
-#                             Only meaningful alongside layer 2.
-#
-# Idempotency: every layer remembers what it did (routes added, hosts file
-# path, resolv.conf backup path) and only undoes exactly that on restore.
+# Details, verification history and findings: docs/FINDINGS.md (F14, F14a-f, F14g, F44)
 
 OYG_ETC=${OYG_ETC:-$OYG_ROOT/etc}
 HOSTS_GEN="$OYG_ROOT/hosts"
@@ -398,26 +370,13 @@ mod_network_layer3_restore() {
 }
 
 # -----------------------------------------------------------------------------
-# Layer 4 — DNS sinkhole resolver hooked in via a bind-mount over
-# /etc/resolv.conf (NOT via ConnMan). The ConnMan route —
-# editing /var/lib/connman/<svc>/settings and nudging connmand — took this
+# Layer 4 — DNS sinkhole resolver bind-mounted over /etc/resolv.conf, NOT
+# via ConnMan. The ConnMan route (editing connman settings + nudging) took this
 # TV off the network for ~30 minutes (see the post-mortem in scripts/dns.sh);
 # this toolkit NEVER signals, reloads or restarts connmand. The bind address
-# comes from $OYG_ROOT/dns.bind: 127.0.0.2 by default, 127.0.0.1 once Variant
-# C (go-c.sh) took connmand's proxy out of the way. The managed
-# resolv.conf lists the sink first and the real upstream as a fallback, so
-# DNS survives even if the resolver dies. Start-up ordering: dns.sh starts
-# and verifies the resolver BEFORE pointing resolv.conf at it, and an
-# auto-revert timer (default 180 s) unmounts the override if an apply is
-# never confirmed. Addresses the resolver-bypass gap that lets webOS
-# daemons resolve blocked domains even after /etc/hosts is bind-mounted;
-# see docs/FINDINGS.md F14g.
-#
-# Why layer 4 lives here: the resolver's source-of-truth blocklist is
-# `$OYG_ROOT/hosts` — the same file layer 1 generates from
-# `etc/blocklist-*.txt`. mtime-watched by `dnssink.py`, so re-running
-# `oyg harden --only network` after editing the blocklists picks them
-# up without restarting the listener.
+# comes from $OYG_ROOT/dns.bind; resolver starts + verifies BEFORE the
+# override; auto-revert timer (180 s) guards unconfirmed applies. Source of
+# truth: $OYG_ROOT/hosts (mtime-watched). F14g, F44. Docs: docs/FINDINGS.md.
 # -----------------------------------------------------------------------------
 
 DNS_BIND=$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)

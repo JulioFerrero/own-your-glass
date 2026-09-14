@@ -1,42 +1,21 @@
 #!/bin/sh
 # watch-dns.sh — watchdog for the on-device DNS sinkhole resolver.
+# Every 15 s: re-assert the resolv.conf override (ConnMan regenerates it),
+# probe the resolver, restart it if dead (N tries), and if it will not
+# come back, REVERT the override (umount) — the TV drops onto ConnMan's
+# own resolv.conf and the fallback nameserver keeps DNS alive.
+# NEVER signals, reloads or restarts connmand (guard refuses otherwise;
+# see the post-mortem in scripts/dns.sh).
 #
-# Every loop (default: every 15 s):
-#   1. if dns.applied=1, re-assert the resolv.conf override — ConnMan
-#      regenerates /etc/resolv.conf, which would otherwise clobber our
-#      nameservers. `dns.sh ensure` rewrites the managed file in place
-#      and re-mounts only if the bind actually vanished (idempotent,
-#      never stacks mounts).
-#   2. probe the resolver; if it is genuinely dead, restart it (up to N tries).
-#   3. if it will not come back, REVERT the override (umount) so the TV
-#      falls back to ConnMan's own resolv.conf — never left without DNS.
+# WHY THE PROBE USES A RAW UDP QUERY (observed 2026-09-14): a busybox
+# nslookup text-parse probe KILLED A HEALTHY RESOLVER — a blocked name
+# legitimately answers 0.0.0.0/::, so "no A record" parsed as broken,
+# and restart without a port-wait then failed EADDRNOTAVAIL. The probe
+# now asks only "did we get a well-formed DNS reply?" and requires TWO
+# consecutive failures (debounce) before touching anything.
 #
-# NEVER signals, reloads or restarts connmand. oyg_guard_connman_route
-# refuses to start if any forbidden pattern sneaks back into these files
-# (see the post-mortem in scripts/dns.sh).
-#
-# WHY THE PROBE WAS REWRITTEN (observed, 2026-09-14)
-# ---------------------------------------------------
-# The first version was:
-#     out=$(nslookup -port=53 -timeout=1 es.nextlgsdp.com "$DNS_BIND")
-#     printf '%s' "$out" | grep -Eq 'Address: ' && return 0
-# and it KILLED A HEALTHY RESOLVER 16 s after a good start, then failed to
-# bring it back (bind 127.0.0.2:53 EADDRNOTAVAIL), leaving the TV with no
-# working DNS. Three flaws:
-#   1. it depended on busybox nslookup's flag syntax and on parsing text;
-#   2. it required a particular ANSWER — but a blocked name legitimately
-#      answers 0.0.0.0/::, so "no A record" is a HEALTHY resolver;
-#   3. restart_resolver() killed whatever PID was in dns.pid without
-#      checking it was actually ours, and started a replacement without
-#      waiting for the old process to release the port.
-# The probe now asks the only question that matters — "did we get a
-# well-formed DNS reply?" — with a raw UDP query, and requires TWO
-# consecutive failures before touching anything (debounce).
-#
-# Started by install.sh's init.d/oyg boot hook (state-gated on
-# dns.applied=1) or by scripts/dns.sh apply. Writes its own pid under
-# $OYG_ROOT/watch-dns.pid so `dns.sh stop` can terminate it.
-#
+# Started by the boot hook (state-gated on dns.applied=1) or dns.sh apply;
+# pid under $OYG_ROOT/watch-dns.pid so `dns.sh stop` can terminate it.
 # Exit: never. Caller kills it with TERM.
 
 set -u

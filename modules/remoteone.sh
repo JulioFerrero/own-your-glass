@@ -1,16 +1,10 @@
 OYG_MOD_REMOTEONE=1
 
 # remoteone.sh — ensure the vendor remote-support gate never exists.
-#
-# F18/F30: RemoteOne / remote support on webOS TVs is gated by the
-# existence of a directory/file under /mnt/lg/cmn_data/remoteDebug/.
-# If it exists, LG support (or anyone with the right channel) can dial in.
-#
-# We do NOT delete it (that would also defeat the user's intent — they
-# may want a "RemoteOne is enabled" report). We:
-#   - report existence loudly
-#   - if absent, confirm absence as the hardened state
-#   - with OYG_AGGRESSIVE=1, also tighten /mnt/lg/cmn_data itself
+# F18/F30: RemoteOne is gated by /mnt/lg/cmn_data/remoteDebug/. We do NOT
+# delete it (the owner decides); we report existence loudly, confirm
+# absence as hardened, and with OYG_AGGRESSIVE=1 tighten /mnt/lg/cmn_data.
+# Details, verification history and findings: docs/FINDINGS.md (F18, F30)
 
 REMOTEDEBUG=/mnt/lg/cmn_data/remoteDebug
 CMN_DATA=/mnt/lg/cmn_data

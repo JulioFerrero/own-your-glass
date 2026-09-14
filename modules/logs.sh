@@ -1,16 +1,10 @@
 OYG_MOD_LOGS=1
 
-# logs.sh — privacy hygiene for RAM-disk logs.
-#
-# /tmp/var/log/messages and /tmp/app.voice.log on webOS TVs can contain
-# plaintext voice transcripts BEFORE we get a chance to do anything.
-# We cannot prevent the transcription; we can only limit its lifetime.
-#
-# This module:
-#   - records the finding
-#   - installs a periodic clearer (configurable via OYG_LOG_INTERVAL,
-#     default 60s) into the watcher dir
-#   - the boot hook will respawn it
+# logs.sh — privacy hygiene for RAM-disk logs: /tmp/var/log/messages and
+# /tmp/app.voice.log can carry plaintext voice transcripts before we can
+# intervene. We cannot prevent transcription, only limit its lifetime:
+# a periodic clearer (OYG_LOG_INTERVAL, default 60s) via the watcher dir.
+# Details, verification history and findings: docs/FINDINGS.md (F5)
 
 LOG_INTERVAL=${OYG_LOG_INTERVAL:-60}
 MSG_LOG=/tmp/var/log/messages
