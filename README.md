@@ -89,7 +89,7 @@ After install, no hardening is applied yet — pick your modules and re-run with
 - [`oyg list`](#oyg-list)
 - [Warn-on-risk / opt-in flags](#warn-on-risk--opt-in-flags)
 - [What this CANNOT do on this device](#what-this-cannot-do-on-this-device)
-- [Network module: three layers](#network-module-three-layers)
+- [Network module: four layers](#network-module-three-layers)
 - [Debloat module: reclaim RAM and attack surface from unused feature services](#debloat-module-reclaim-ram-and-attack-surface-from-unused-feature-services)
 - [Apps module: hide unwanted apps from the launcher](#apps-module-hide-unwanted-apps-from-the-launcher)
 - [Capture-device neutralisation (the `mic` module)](#capture-device-neutralisation-the-mic-module)
@@ -182,13 +182,7 @@ wget -qO- https://github.com/JulioFerrero/own-your-glass/archive/refs/heads/main
   && sh /tmp/own-your-glass-main/install.sh
 ```
 
-**(B) From your computer** — if you prefer to review the repo before running anything on the TV. The repo includes `scripts/deploy.sh` that wraps this for you (run `scripts/deploy.sh --help` for the env overrides):
-
-```sh
-git clone https://github.com/JulioFerrero/own-your-glass
-scp -r own-your-glass root@<tv-ip>:/tmp/
-ssh root@<tv-ip> 'sh /tmp/own-your-glass/install.sh'
-```
+**(B) From your computer** — `git clone` then serve the tree to the TV any way you like (scp to `/tmp/own-your-glass` and run `install.sh` there works; the control-panel app does this for you from its bundled copy).
 
 Either path installs to:
 
@@ -379,7 +373,7 @@ risky behaviour. **Read the linked findings in `docs/FINDINGS.md` first.**
 | `OYG_NETWORK_STRICT=1` | includes the STRICT blocklist section | ThinQ app, voice control, push notifications, LG home-screen card delivery |
 | `OYG_NETWORK_IPBLOCK=1` | also applies layer 3 (per-IP `ip route add blackhole`) | anything whose IPs happen to be near the listed hosts (CDNs change!) |
 | `OYG_DNS_OVERRIDE=1` | backs up `/var/lib/misc/resolv.conf` and writes `nameserver <default-gw>` | any DNS consumer that does NOT honour `/etc/hosts` (e.g. `nslookup`, some webOS daemons) |
-| `OYG_DNS_RESOLVER=1` (network, layer 4) | installs an on-device DNS sinkhole resolver on `127.0.0.2:53` (UDP + TCP, pure Python stdlib) and hooks it in via a **`/etc/resolv.conf` bind-mount**: the managed file lists `127.0.0.2` first and the real DHCP-learned upstream as fallback. The resolver is started and verified answering BEFORE the override goes in; an auto-revert timer (180 s) unmounts an unconfirmed apply. Substring/suffix-match covers subdomains in one rule. Watchdog re-asserts resolv.conf and reverts the override if the resolver dies and won't restart. | anything that resolves through `/etc/resolv.conf` (libc `getaddrinfo`, most daemons) and `nslookup`/BusyBox resolution. The ConnMan route is **rejected on this device**: editing connman's settings + nudging connmand (no `ExecReload` → SIGHUP) took the TV off the network for ~30 min, so this toolkit NEVER signals, reloads or restarts connmand (see the post-mortem in `scripts/dns.sh`). Worst-case rollback is `umount` — the TV falls back to ConnMan's own resolv.conf. |
+| `OYG_DNS_RESOLVER=1` (network, layer 4) | installs an on-device DNS sinkhole resolver (UDP + TCP, pure Python stdlib) and hooks it in via a **`/etc/resolv.conf` bind-mount**: the managed file lists the sink first and the real DHCP-learned upstream as fallback. The resolver is started and verified answering BEFORE the override goes in; an auto-revert timer (180 s) unmounts an unconfirmed apply. Substring/suffix-match covers subdomains in one rule. Watchdog re-asserts resolv.conf and reverts the override if the resolver dies and won't restart. The bind address comes from `$OYG_ROOT/dns.bind` (`127.0.0.2` by default; `127.0.0.1` under Variant C — see F44). | anything that resolves through `/etc/resolv.conf` (libc `getaddrinfo`, most daemons) and `nslookup`/BusyBox resolution. The ConnMan *settings* route is **rejected on this device**: editing connman's settings + nudging connmand (no `ExecReload` → SIGHUP) took the TV off the network for ~30 min, so this toolkit NEVER signals, reloads or restarts connmand (see the post-mortem in `scripts/dns.sh`). The launcher-patch route (`scripts/go-c.sh`, `-r --nodnsproxy`) is the supported way to close the loopback path. Worst-case rollback is `umount` — the TV falls back to ConnMan's own resolv.conf. |
 
 ---
 
@@ -505,7 +499,7 @@ different class of leak.
 | 1. `/etc/hosts` overlay | Generates a hosts file from the blocklists and bind-mounts it over `/etc/hosts` (which is on a read-only overlay on this device). For every blocked domain we emit **both** `0.0.0.0 <d>` and `::1 <d>` — an IPv4-only sinkhole lets AAAA lookups fall through to DNS, so the dual-stack sinkhole is required. | Anything resolving via libc `getent`. The TV's first-party daemons and JavaScript libraries use this path. | Anything that talks DNS directly and IGNORES `/etc/hosts` (verified: `nslookup` and BusyBox's own resolver bypass it). |
 | 2. Resolver bypass mitigation | `ip route add blackhole` for the hardcoded public resolvers (8.8.8.8, 8.8.4.4, 1.1.1.1, 1.0.0.1, 9.9.9.9, 208.67.222.222, 208.67.220.220). Optional: backup + rewrite `/var/lib/misc/resolv.conf` to point at the default gateway (opt-in `OYG_DNS_OVERRIDE=1`). | webOS daemons that bypass `/etc/hosts` by talking to a hardcoded resolver IP directly. | DoH (TCP/443 to `dns.google` etc.) and DoT (TCP/853). No netfilter, no interception possible. |
 | 3. Per-domain IP blackhole | Resolve each blocklist domain via `getent` (with `nslookup` fallback), then `ip route add blackhole` the resulting A records. | Daemons that resolve at startup and cache the IP. Useful when both layer 1 (libc bypass) and layer 2 (hardcoded resolver) miss. | Anything that re-resolves each time (CDNs rotate IPs) — this layer ages badly. |
-| 4. On-device sinkhole resolver via `/etc/resolv.conf` *(opt-in `OYG_DNS_RESOLVER=1`)* | Pure-Python stdlib DNS resolver on **`127.0.0.2:53`** (UDP + TCP) — suffix-matches the blocklist, returns `0.0.0.0` / `::` / NXDOMAIN for matches, forwards everything else to the real upstream (txn-id preserved). Hooked in by **bind-mounting a managed `/etc/resolv.conf`** over the real one (`127.0.0.2` first, DHCP-learned upstream as fallback). Resolver started + verified BEFORE the override; auto-revert timer (180 s) on apply; **no connmand interaction at all** (the ConnMan settings route took the TV offline once — see scripts/dns.sh post-mortem). | Everything that resolves through `/etc/resolv.conf`: webOS daemons using libc `getaddrinfo`, and `nslookup`/BusyBox resolution. This closes the gap documented as F14g in `docs/FINDINGS.md`: libc tools honour `/etc/hosts`, but `nslookup` and the DNS path IGNORE it. | DoH (TCP/443) and DoT (TCP/853) that talk to a hardcoded resolver IP (rare on this TV; latent exposure). Daemons that hard-wire ConnMan's proxy on `127.0.0.1:53` instead of reading resolv.conf. |
+| 4. On-device sinkhole resolver via `/etc/resolv.conf` *(opt-in `OYG_DNS_RESOLVER=1`)* | Pure-Python stdlib DNS resolver (UDP + TCP) — suffix-matches the blocklist, returns `0.0.0.0` / `::` / NXDOMAIN for matches, forwards everything else to the real upstream (txn-id preserved). Hooked in by **bind-mounting a managed `/etc/resolv.conf`** over the real one (sink first, DHCP-learned upstream as fallback). Resolver started + verified BEFORE the override; auto-revert timer (180 s) on apply. **No connmand signal/reload ever** (the ConnMan settings route took the TV offline once — see scripts/dns.sh post-mortem); the loopback path is closed instead by launching connmand with `--nodnsproxy` (Variant C, F44), after which the sink owns `127.0.0.1:53`. | Everything that resolves through `/etc/resolv.conf`: webOS daemons using libc `getaddrinfo`, and `nslookup`/BusyBox resolution. This closes the gap documented as F14g in `docs/FINDINGS.md`: libc tools honour `/etc/hosts`, but `nslookup` and the DNS path IGNORE it. | DoH (TCP/443) and DoT (TCP/853) that talk to a hardcoded resolver IP (rare on this TV; latent exposure). Without Variant C: daemons that hard-wire ConnMan's proxy on `127.0.0.1:53` instead of reading resolv.conf. |
 
 ### Effectiveness, honestly
 
@@ -550,11 +544,18 @@ different class of leak.
   managed `/etc/resolv.conf` over the real one — `127.0.0.2` first, the
   DHCP-learned upstream as fallback — starting and verifying the resolver
   BEFORE the override, with an auto-revert timer (180 s) on every apply.
-  **Watchdog.** `scripts/watch-dns.sh` polls every 15 s; it re-asserts the
+  The bind address is not hardcoded: `dns.sh` reads `$OYG_ROOT/dns.bind`,
+  which starts as `127.0.0.2` and becomes `127.0.0.1` once Variant C is
+  applied (connmand started with `--nodnsproxy` so the sink can own the
+  loopback port every consumer uses). **Watchdog.** `scripts/watch-dns.sh`
+  polls every 15 s; it re-asserts the
   override (ConnMan regenerates resolv.conf), restarts a dead resolver
   (3 tries), and if it will not come back, reverts the override (umount)
   so the TV drops onto ConnMan's own resolv.conf — never left without DNS
-  (the fallback nameserver carries lookups in the meantime). **Audit trail.**
+  (the fallback nameserver carries lookups in the meantime). **Undoing C.**
+  `dns.sh stop` (and therefore `oyg restore` / `uninstall.sh`) detects the
+  C state and runs `scripts/rollback-c.sh` first — stock launcher back,
+  connmand restarted with its proxy. **Audit trail.**
   `$OYG_ROOT/dns-audit.log` records every blocked lookup (timestamp, client,
   name, qtype) — that is what proves layer 4 is doing real work.
 
@@ -1131,8 +1132,7 @@ At boot the hook:
 4. If `$OYG_ROOT/state` shows `network.applied=1`, re-applies the
    network module (which re-applies layer 1 — the `/etc/hosts` bind
    mount — and layer 2 — the resolver blackholes). Layer 3 is
-   re-applied only if the state also shows `network.ipblock=1`. Layer 4
-   (the on-device sinkhole resolver on `127.0.0.2:53`, hooked in via a
+   re-applied only if the state also shows `network.ipblock=1`. Layer 4   (the on-device sinkhole resolver, hooked in via a
    `/etc/resolv.conf` bind-mount) is re-applied only if state has
    `network.dns_resolver=1`; the boot hook exports `OYG_DNS_RESOLVER=1`
    so layer 4's harden path takes effect. `dns.sh start` brings the
@@ -1141,7 +1141,12 @@ At boot the hook:
    file's mtime is watched by the running resolver, so an
    `oyg harden --only network` after editing blocklists picks them up
    without a restart. All opt-in flags are re-derived from the state file
-   so the boot environment doesn't need to know about them.
+   so the boot environment doesn't need to know about them. **If Variant C
+   is active** (`dns.bind` = `127.0.0.1` and `connman.sh.patched` exists),
+   the hook first re-applies the patched connman launcher (the bind-mount
+   dies at reboot) and restarts connmand so the proxy stays off — at boot
+   this is safe, nothing is using the network yet — then waits up to 90 s
+   for Wi-Fi before layer 4 starts.
 5. If `$OYG_ROOT/state` shows `perms.applied=1`, re-applies the
    `perms` module (chmods webOSbrew hbchannel + Google Home runtime
    paths). The opt-in flag (`OYG_AGGRESSIVE=1`) is re-exported from

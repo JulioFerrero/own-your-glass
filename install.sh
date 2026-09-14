@@ -48,9 +48,13 @@ install_files() {
         cp "$f" "$OYG_DST/etc/$(basename "$f")"
     done
     # scripts/ — operator tools that must be runnable from the device
-    # (sniffer, DNS sinkhole resolver + wrapper + watchdog).
+    # (sniffer, DNS sinkhole resolver + wrapper + watchdog). Off-device
+    # tools (workstation-only) are excluded so the TV copy stays lean.
     for f in "$OYG_SRC"/scripts/*.sh "$OYG_SRC"/scripts/*.py; do
         [ -f "$f" ] || continue
+        case "$(basename "$f")" in
+            build-app.sh|refresh-blocklist.sh|redact-report.py) continue ;;
+        esac
         cp "$f" "$OYG_DST/scripts/$(basename "$f")"
     done
     chmod 0755 "$OYG_DST/oyg"

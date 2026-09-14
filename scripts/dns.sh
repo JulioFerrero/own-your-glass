@@ -598,6 +598,22 @@ cmd_revert() {
 cmd_stop() {
     require_root
 
+    # Variant C is active? Undo it first. With connmand proxy-less and the
+    # sink on 127.0.0.1, a bare stop would leave resolv.conf pointing at a
+    # dead 127.0.0.1 — and connmand would NOT resume its own proxy, because
+    # it never restarts itself here (see the post-mortem). rollback-c.sh
+    # restores the stock launcher and restarts connmand; the sink it would
+    # restart is not wanted — we are stopping everything — hence the knob.
+    if [ "$(cat "$OYG_ROOT/dns.bind" 2>/dev/null)" = "127.0.0.1" ] \
+        && awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
+        if [ -x "$OYG_ROOT/rollback-c.sh" ]; then
+            ROLLBACK_NO_SINK=1 sh "$OYG_ROOT/rollback-c.sh" || true
+            ok_dns "Variant C undone (stock connman launcher restored)"
+        else
+            warn_dns "dns.bind says C is active but rollback-c.sh is missing — connmand stays proxy-less until reboot"
+        fi
+    fi
+
     # Stop watchdog.
     if [ -r "$WATCHDOG_PID" ]; then
         wpid=$(cat "$WATCHDOG_PID" 2>/dev/null || true)

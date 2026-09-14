@@ -46,79 +46,6 @@ run() {
     "$@"
 }
 
-_run_capture() {
-    if [ "$OYG_DRY_RUN" = "1" ]; then
-        printf 'DRY-RUN: %s\n' "$*"
-        return 0
-    fi
-    if [ -n "${OYG_LOG:-}" ]; then
-        printf '[%s] RUN   %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$OYG_LOG" 2>/dev/null || true
-    fi
-    "$@"
-}
-
-backup_path() {
-    src=$1
-    [ -z "$src" ] && return 1
-    if [ ! -e "$src" ] && [ ! -L "$src" ]; then
-        return 1
-    fi
-    ensure_dirs
-    key=$(printf '%s' "$src" | tr '/' '_')
-    dest="$OYG_BACKUP/${key}.meta"
-    if [ -e "$dest" ]; then
-        return 0
-    fi
-    {
-        printf 'PATH=%s\n' "$src"
-        if [ -L "$src" ]; then
-            printf 'TYPE=symlink\n'
-            printf 'TARGET=%s\n' "$(readlink "$src")"
-        elif [ -d "$src" ]; then
-            printf 'TYPE=dir\n'
-        else
-            printf 'TYPE=file\n'
-        fi
-        printf 'MODE=%s\n' "$(stat -c '%a' "$src" 2>/dev/null || stat -f '%Lp' "$src" 2>/dev/null || echo unknown)"
-        printf 'OWNER=%s\n' "$(stat -c '%u:%g' "$src" 2>/dev/null || stat -f '%u:%g' "$src" 2>/dev/null || echo unknown)"
-    } >"$dest" 2>/dev/null || {
-        err "failed to back up $src"
-        return 1
-    }
-    if [ -f "$src" ] && [ ! -L "$src" ]; then
-        cp -p "$src" "${dest}.content" 2>/dev/null || true
-    fi
-    return 0
-}
-
-restore_path() {
-    src=$1
-    [ -z "$src" ] && return 1
-    key=$(printf '%s' "$src" | tr '/' '_')
-    meta="$OYG_BACKUP/${key}.meta"
-    [ ! -e "$meta" ] && return 1
-    type=$(awk -F= '/^TYPE=/{print $2}' "$meta")
-    mode=$(awk -F= '/^MODE=/{print $2}' "$meta")
-    case "$type" in
-        file)
-            if [ -e "${meta}.content" ]; then
-                cp -p "${meta}.content" "$src" 2>/dev/null && chmod "$mode" "$src" 2>/dev/null
-            fi
-            ;;
-        dir)
-            [ -d "$src" ] || mkdir -p "$src" 2>/dev/null
-            chmod "$mode" "$src" 2>/dev/null || true
-            ;;
-        symlink)
-            target=$(awk -F= '/^TARGET=/{print $2}' "$meta")
-            rm -f "$src" 2>/dev/null
-            ln -s "$target" "$src" 2>/dev/null
-            ;;
-    esac
-    rm -f "$meta" "${meta}.content" 2>/dev/null
-    return 0
-}
-
 state_put() {
     key=$1; shift
     [ "$OYG_DRY_RUN" = "1" ] && {
@@ -151,10 +78,6 @@ state_drop() {
     rm -f "$tmp" 2>/dev/null
 }
 
-state_all() {
-    [ -r "$OYG_STATE" ] || return 0
-    cat "$OYG_STATE"
-}
 
 trim() {
     printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
