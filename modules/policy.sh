@@ -90,21 +90,147 @@ OYG_MOD_POLICY=1
 # is the point.
 #
 # ---------------------------------------------------------------------
+# Job C — force-decline the SDX/ACR consent stores.
+# ---------------------------------------------------------------------
+# The /var/luna/preferences/eula file Job B handles is the LG "Settings
+# app" view of consent. THE TV KEEPS CONSENT STATE IN FOUR PLACES, and
+# three of them are the ones the SDX/ACR path actually reads:
+#
+#   /mnt/lg/cmn_data/sdp/eula-service/eula.json
+#   /mnt/lg/cache/sdp/eula-service/eula.json
+#   /mnt/lg/user/sdp/eula-service/eula.json
+#
+# All three are tiny (~600 bytes) JSON files of the same shape:
+#
+#   {"deviceCountryCode":"ES","notifier":"com.webos.settingsservice",
+#    "deviceDateTime":"...","eulaChangeReason":"changed",
+#    "statusList":[
+#      {"managementTypeCode":"S_DPA","status":"A","versionId":"..."},
+#      {"managementTypeCode":"S_SVC","status":"A","versionId":"..."},
+#      {"managementTypeCode":"S_VNG","status":"A","versionId":"..."},
+#      {"managementTypeCode":"S_MKT","status":"A","versionId":"..."},
+#      {"managementTypeCode":"S_ADG","status":"A","versionId":"..."},
+#      {"managementTypeCode":"S_TAG","status":"A","versionId":"..."}
+#    ],"synchronized":true}
+#
+# Codes:
+#   S_VNG = viewing-information / ACR consent
+#   S_MKT = marketing
+#   S_ADG = ad targeting
+#   S_TAG = analytics
+#
+# Each store has the SAME six codes and each is currently "A" for all
+# six — every consent in every store is Accepted. Job B only patches
+# /var/luna/preferences/eula. THIS JOB patches the three SDX-side
+# stores, which is what the SDX/ACR/QCARD delivery pipeline actually
+# consults when deciding whether to enable viewing-info collection.
+#
+# We:
+#   1. back each file up ONCE to $OYG_BACKUP/eula-<store>.orig
+#      (store=cmn|cache|user; never overwritten; the operator's audit
+#      trail of the pre-own-your-glass state);
+#   2. rewrite every statusList[].status that is "A" to "D" using
+#      python3 (the device has /usr/bin/python3 — verified). We guard
+#      python3 (warn + skip if absent rather than corrupting the file),
+#      write to a temp file then mv atomically (no in-place edit).
+#
+# WHY "D": "D" is the conventional counterpart to "A" in the accepted/
+# declined pair, and is what /usr/sbin/eula-service emits when the user
+# toggles an entry off in the Settings UI. THE EXACT ENUM IS
+# UNVERIFIED on this device: /usr/sbin/eula-service exposes no
+# enumerating string, and its only error line is "Unknown EULA
+# status", so we cannot confirm "D" maps to a specific code path. The
+# official lever for "force all declined" is
+#   luna://com.webos.service.eulaservice/resetEula
+# which we deliberately do NOT call: per its documented behaviour, it
+# forces a restart into the User Agreements wall ("The TV will now
+# restart to show the updated User Agreements"), which is the
+# opposite of what we want. ACCEPTED RISK: a wrong status code may
+# cause the TV to re-prompt for the agreements. This is reversible
+# (the backup is on disk; `oyg restore --only policy` puts it back).
+#
+# Skip-if-absent: any store that does not exist is reported N/A. A
+# missing store does not fail the module — only a store that EXISTS
+# and STILL contains an "A" entry fails.
+#
+# The files are writable but are rewritten by eulaservice/SDX when
+# they run, so this MUST be re-applied on every boot — which is why
+# `policy` is in the boot hook's `harden --only` list.
+#
+# ---------------------------------------------------------------------
+# Job D — neutralize the marketing-nag activity.
+# ---------------------------------------------------------------------
+# /mnt/lg/cmn_data/sdp/eula-service/marketingAllowedDate.json
+# schedules an activitymanager toast for ~2 years in the future:
+#
+#   {"activitymanager":{"start":true,"activity":{
+#      "callback":{"method":"luna://com.webos.service.eulaservice/marketingAllowedCallback",
+#                  "params":{"type":"create_marketing_notice"}},
+#      "description":"Create toast within 2 years that reminds marketingAllowed",
+#      "schedule":{"start":"2028-04-13 19:42:01","local":true},
+#      "type":{"foreground":true,"persist":true}}},
+#    "YYYY":"2026","MM":"07","DD":"13","count":0}
+#
+# When the schedule fires, com.webos.service.eulaservice shows a toast
+# asking the user to re-allow marketing. We neutralise this by moving
+# the file aside (rename, not delete — restore is trivial). Activity-
+# manager skips a missing schedule file. We back the file up once
+# (separate from the eula.json backups) and remove the live file.
+#
+# Restore: mv the backup back over the live path. If eula-service has
+# recreated it (e.g. with a new schedule) since harden last ran, the
+# restore simply overwrites with our captured copy. That is the
+# desired behaviour.
+#
+# Skip-if-absent: if the file is already gone (we removed it last
+# boot, or it never existed), the job reports OK/N/A and moves on.
+#
+# ---------------------------------------------------------------------
 # STATE KEYS
 # ---------------------------------------------------------------------
 #   policy.applied            "1" if harden completed cleanly
 #   policy.flagfile           "/var/luna/preferences/webosbrew_block_updates"
-#   policy.telnetflag         "/var/luna/preferences/webosbrew_telnet_disabled"
+#   policy.telnetflag        "/var/luna/preferences/webosbrew_telnet_disabled"
 #   policy.eula.path          "/var/luna/preferences/eula"
 #   policy.eula.backup        "$OYG_BACKUP/eula.orig"
 #   policy.eula.flipped       count of entries flipped on the LAST run
 #   policy.eula.allow         empty = decline all; otherwise space-list of ids
 #   policy.eula.last.before   count of "accepted":true BEFORE last rewrite
+#
+#   policy.sdx.stores         space-separated list of store basenames
+#                             (cmn, cache, user) actually configured
+#   policy.sdx.<store>.path   absolute path to <store>'s eula.json
+#   policy.sdx.<store>.backup path to <store>'s backup file
+#   policy.sdx.<store>.last.before  count of "A" entries before last rewrite
+#   policy.sdx.<store>.last.after   count of "A" entries after last rewrite
+#   policy.sdx.<store>.applied      "1" if that store is fully declined
+#
+#   policy.nag.path           /mnt/lg/cmn_data/sdp/eula-service/marketingAllowedDate.json
+#   policy.nag.backup         $OYG_BACKUP/marketingAllowedDate.json.orig
+#   policy.nag.neutralised    "1" when the live file has been moved aside
+
 
 POLICY_FLAG=${POLICY_FLAG:-/var/luna/preferences/webosbrew_block_updates}
 POLICY_TELNET_FLAG=${POLICY_TELNET_FLAG:-/var/luna/preferences/webosbrew_telnet_disabled}
 POLICY_EULA=${POLICY_EULA:-/var/luna/preferences/eula}
 POLICY_EULA_BACKUP=${POLICY_EULA_BACKUP:-"$OYG_BACKUP/eula.orig"}
+
+# Job C: the three SDX/ACR consent stores. Each is a separate on-disk
+# copy of the same logical consent state; eula-service keeps them in
+# sync, but it is OUR job to keep them all declined. The basename is
+# used as the state-key suffix (cmn|cache|user) and the backup file
+# suffix (so the operator can `ls $OYG_BACKUP/eula-*.orig` and see
+# exactly what we captured from each store at harden time).
+POLICY_SDX_STORE_CMN=${POLICY_SDX_STORE_CMN:-/mnt/lg/cmn_data/sdp/eula-service/eula.json}
+POLICY_SDX_STORE_CACHE=${POLICY_SDX_STORE_CACHE:-/mnt/lg/cache/sdp/eula-service/eula.json}
+POLICY_SDX_STORE_USER=${POLICY_SDX_STORE_USER:-/mnt/lg/user/sdp/eula-service/eula.json}
+
+# Job D: the marketing-nag activity schedule. Moved aside (renamed to
+# "<path>.neutralised") so activitymanager cannot find it. Backed up
+# once so restore is trivial.
+POLICY_NAG_PATH=${POLICY_NAG_PATH:-/mnt/lg/cmn_data/sdp/eula-service/marketingAllowedDate.json}
+POLICY_NAG_BACKUP=${POLICY_NAG_BACKUP:-"$OYG_BACKUP/marketingAllowedDate.json.orig"}
+POLICY_NAG_NEUTRALISED_SUFFIX=${POLICY_NAG_NEUTRALISED_SUFFIX:-.neutralised}
 
 # _policy_eula_count_accepted <file>
 #   Print the number of "accepted":true occurrences in <file>.
@@ -165,6 +291,127 @@ _policy_eula_collect_ids() {
             }
         }
     ' "$f" 2>/dev/null
+}
+
+# _policy_sdx_status_dump <file>
+#   Echo every statusList entry as `<code> <status>` on its own line
+#   (one entry per line). Used by status output to show what is
+#   currently on disk. Empty if the file is missing or unparseable.
+#   We use python3 (guarded): it gives us a correct JSON parse, which
+#   awk/sed cannot promise for this file's shape.
+_policy_sdx_status_dump() {
+    f=$1
+    [ -r "$f" ] || return 0
+    if ! have python3; then
+        return 0
+    fi
+    python3 - "$f" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    for e in d.get("statusList", []) or []:
+        c = e.get("managementTypeCode", "?")
+        s = e.get("status", "?")
+        print("%s %s" % (c, s))
+except Exception:
+    pass
+PY
+}
+
+# _policy_sdx_count_a <file>
+#   Print the number of "A" (Accepted) status entries in <file>'s
+#   statusList. Used for the before/after counter. Same python3 guard.
+_policy_sdx_count_a() {
+    f=$1
+    [ -r "$f" ] || { printf '0\n'; return 0; }
+    if ! have python3; then
+        printf '0\n'
+        return 0
+    fi
+    python3 - "$f" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    n = 0
+    for e in d.get("statusList", []) or []:
+        if e.get("status") == "A":
+            n += 1
+    print(n)
+except Exception:
+    print(0)
+PY
+}
+
+# _policy_sdx_decline_all <file>
+#   Rewrite every statusList[].status that is "A" to "D" in <file>,
+#   preserving every other field byte-for-byte (key order, device
+#   country code, notifier, datetime, versionIds, synchronized flag,
+#   and any fields we don't know about). Write to a temp file then mv
+#   atomically. Return 0 on success, 1 on failure (leaves the live
+#   file untouched). Caller is expected to have backed up already.
+#
+#   python3 is REQUIRED. We refuse to write without it (the brief is
+#   explicit: warn + skip, never corrupt). The script uses
+#   json.dump(..., indent=None, separators=...) and re-orders keys in
+#   insertion order, which preserves the file's byte layout to within
+#   the canonical-separator set that python's json module emits (a
+#   single space after `:` and `,`). Status looks at the parsed
+#   contents, not the bytes, so this round-trip is safe.
+_policy_sdx_decline_all() {
+    f=$1
+    [ -r "$f" ] || return 1
+    if ! have python3; then
+        warn "policy: python3 not available — refusing to rewrite $f (skipping)"
+        return 1
+    fi
+    tmp=$(mktemp 2>/dev/null) || return 1
+    if python3 - "$f" "$tmp" <<'PY' 2>/dev/null; then
+import json, sys, os
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+changed = 0
+for e in d.get("statusList", []) or []:
+    if e.get("status") == "A":
+        e["status"] = "D"
+        changed += 1
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(d, fh, separators=(", ", ": "))
+    fh.write("\n")
+sys.exit(0)
+PY
+        if mv "$tmp" "$f" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    else
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+}
+
+# _policy_sdx_store_basename <path>
+#   Reduce a /mnt/lg/<store>/sdp/... path to its <store> basename
+#   (cmn | cache | user). Used as the state-key suffix and as the
+#   backup-file suffix.
+_policy_sdx_store_basename() {
+    p=$1
+    case "$p" in
+        /mnt/lg/cmn_data/*)   printf 'cmn\n' ;;
+        /mnt/lg/cache/*)      printf 'cache\n' ;;
+        /mnt/lg/user/*)       printf 'user\n' ;;
+        *)                    printf 'unknown\n' ;;
+    esac
+}
+
+# _policy_sdx_backup_path <path> <basename>
+#   Compute $OYG_BACKUP/eula-<basename>.orig from a store path.
+_policy_sdx_backup_path() {
+    bn=$2
+    printf '%s/eula-%s.orig\n' "$OYG_BACKUP" "$bn"
 }
 
 mod_policy_harden() {
@@ -228,12 +475,10 @@ mod_policy_harden() {
     # Job B — force-decline LG consents.
     # -----------------------------------------------------------------
     if [ ! -e "$POLICY_EULA" ]; then
-        warn "policy: $POLICY_EULA does not exist — Job B skipped"
+        warn "policy: $POLICY_EULA does not exist — Job B skipped (Job C/D still run)"
         state_put "policy.eula.path" "$POLICY_EULA"
-        state_put "policy.applied" "1"
-        return 0
-    fi
-    state_put "policy.eula.path" "$POLICY_EULA"
+    else
+        state_put "policy.eula.path" "$POLICY_EULA"
 
     # 1. Back up once. Never overwrite the original.
     if [ ! -e "$POLICY_EULA_BACKUP" ]; then
@@ -358,6 +603,217 @@ mod_policy_harden() {
     fi
 
     ok "policy: rewrote $POLICY_EULA — flipped $flipped entr(y/ies) (before=$before after=$after)"
+    fi  # close `if [ ! -e "$POLICY_EULA" ] ... else ...`
+
+    # -----------------------------------------------------------------
+    # Job C — force-decline the SDX/ACR consent stores (the ones the
+    # SDX/ACR/QCARD delivery pipeline actually consults).
+    # -----------------------------------------------------------------
+    # Idempotency contract:
+    #   - Backup file at $OYG_BACKUP/eula-<store>.orig is written ONCE,
+    #     preserved forever after. A later rewrite cannot corrupt the
+    #     operator's audit trail.
+    #   - If the live file is already all-D (after a previous boot's
+    #     rewrite + eula-service hasn't re-flipped it), we record the
+    #     zero-counts and report OK without touching the file.
+    #   - If a store is missing on this build, we report N/A and
+    #     continue — does NOT fail the module.
+    if ! have python3; then
+        warn "policy: python3 is not available — Job C (SDX stores) skipped on every store"
+        warn "policy: install python3 on the device, or accept that the SDX/ACR path keeps reading Accepted"
+    fi
+
+    sdx_store_fail=0
+    sdx_store_list=""
+    for sdx_store_path in \
+        "$POLICY_SDX_STORE_CMN" \
+        "$POLICY_SDX_STORE_CACHE" \
+        "$POLICY_SDX_STORE_USER" \
+    ; do
+        sdx_bn=$(_policy_sdx_store_basename "$sdx_store_path")
+        sdx_bak=$(_policy_sdx_backup_path "$sdx_store_path" "$sdx_bn")
+        sdx_key_prefix="policy.sdx.$sdx_bn"
+        state_put "$sdx_key_prefix.path"   "$sdx_store_path"
+        state_put "$sdx_key_prefix.backup" "$sdx_bak"
+        sdx_store_list="$sdx_store_list $sdx_bn"
+
+        if [ ! -e "$sdx_store_path" ]; then
+            ok "policy: sdx store $sdx_bn absent ($sdx_store_path) — N/A"
+            state_put "$sdx_key_prefix.last.before" "0"
+            state_put "$sdx_key_prefix.last.after"  "0"
+            state_put "$sdx_key_prefix.applied"     "n/a"
+            continue
+        fi
+
+        # 1. Back up once.
+        if [ ! -e "$sdx_bak" ]; then
+            if [ "$OYG_DRY_RUN" = "1" ]; then
+                printf 'DRY-RUN: cp -p %s %s\n' "$sdx_store_path" "$sdx_bak"
+            else
+                if ! run cp -p "$sdx_store_path" "$sdx_bak" 2>/dev/null; then
+                    warn "policy: sdx store $sdx_bn — could not back up to $sdx_bak — refusing to rewrite"
+                    sdx_store_fail=$((sdx_store_fail + 1))
+                    continue
+                fi
+                ok "policy: sdx store $sdx_bn — backed up to $sdx_bak"
+            fi
+        else
+            ok "policy: sdx store $sdx_bn — backup already present at $sdx_bak (preserved)"
+        fi
+
+        # 2. BEFORE state.
+        sdx_before=$(_policy_sdx_count_a "$sdx_store_path")
+        state_put "$sdx_key_prefix.last.before" "$sdx_before"
+
+        # 3. Rewrite. Skip if nothing to flip.
+        if [ "$sdx_before" = "0" ]; then
+            ok "policy: sdx store $sdx_bn — already fully declined (before=0)"
+            state_put "$sdx_key_prefix.last.after" "0"
+            state_put "$sdx_key_prefix.applied"    "1"
+            continue
+        fi
+
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: python3 rewrite %s (A→D for %s entries)\n' \
+                "$sdx_store_path" "$sdx_before"
+            ok "policy: sdx store $sdx_bn — would flip $sdx_before entr(y/ies) (A→D)"
+            state_put "$sdx_key_prefix.last.after" "0"
+            state_put "$sdx_key_prefix.applied"    "1"
+            continue
+        fi
+
+        if ! _policy_sdx_decline_all "$sdx_store_path"; then
+            warn "policy: sdx store $sdx_bn — rewrite failed (python3 missing or file not writable?)"
+            sdx_store_fail=$((sdx_store_fail + 1))
+            state_put "$sdx_key_prefix.last.after" "$sdx_before"
+            continue
+        fi
+
+        # 4. AFTER state + JSON sanity.
+        sdx_after=$(_policy_sdx_count_a "$sdx_store_path")
+        state_put "$sdx_key_prefix.last.after" "$sdx_after"
+
+        # JSON sanity: the file must still parse and contain the same
+        # number of statusList entries we started with. We dump the
+        # live file through python3 and count the entries; we hit the
+        # backup the same way to know how many entries the store
+        # originally had (the backup is all-A so _policy_sdx_count_a
+        # is the wrong counter — use len() instead).
+        sdx_sanity_entries=0
+        sdx_orig_entries=0
+        if have python3; then
+            sdx_sanity_entries=$(python3 - "$sdx_store_path" <<'PY' 2>/dev/null || echo 0
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    print(len(d.get("statusList", []) or []))
+except Exception:
+    print(0)
+PY
+)
+            sdx_orig_entries=$(python3 - "$sdx_bak" <<'PY' 2>/dev/null || echo 0
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    print(len(d.get("statusList", []) or []))
+except Exception:
+    print(0)
+PY
+)
+        fi
+        if [ "$sdx_sanity_entries" != "$sdx_orig_entries" ] || [ "$sdx_sanity_entries" = "0" ]; then
+            warn "policy: sdx store $sdx_bn — entry-count sanity failed ($sdx_sanity_entries vs backup $sdx_orig_entries) — restoring from backup"
+            if cp -p "$sdx_bak" "$sdx_store_path" 2>/dev/null; then
+                err "policy: sdx store $sdx_bn — rollback OK; rerun \`oyg harden --only policy\` to retry"
+            else
+                err "policy: sdx store $sdx_bn — rollback FAILED — restore $sdx_store_path manually from $sdx_bak"
+            fi
+            sdx_store_fail=$((sdx_store_fail + 1))
+            continue
+        fi
+        if [ "$sdx_after" != "0" ]; then
+            warn "policy: sdx store $sdx_bn — still has $sdx_after Accepted entries after rewrite (eula-service may have raced us)"
+            sdx_store_fail=$((sdx_store_fail + 1))
+        else
+            ok "policy: sdx store $sdx_bn — flipped $sdx_before entr(y/ies) (A→D, after=$sdx_after)"
+        fi
+        state_put "$sdx_key_prefix.applied" "1"
+    done
+    state_put "policy.sdx.stores" "$(trim "$sdx_store_list")"
+
+    # -----------------------------------------------------------------
+    # Job D — neutralize the marketing-nag activity.
+    # -----------------------------------------------------------------
+    # Path: $POLICY_NAG_PATH
+    # Strategy: back it up once to $POLICY_NAG_BACKUP, then rename the
+    # live file aside to <path><.neutralised>. Activity-manager cannot
+    # find a missing schedule file, so the toast never fires.
+    state_put "policy.nag.path"   "$POLICY_NAG_PATH"
+    state_put "policy.nag.backup" "$POLICY_NAG_BACKUP"
+
+    nag_neutral_path="${POLICY_NAG_PATH}${POLICY_NAG_NEUTRALISED_SUFFIX}"
+
+    if [ ! -e "$POLICY_NAG_PATH" ] && [ ! -e "$nag_neutral_path" ]; then
+        # Never existed (or eula-service has stopped creating it).
+        ok "policy: nag schedule absent at $POLICY_NAG_PATH — N/A"
+        state_put "policy.nag.neutralised" "n/a"
+    elif [ -e "$nag_neutral_path" ] && [ ! -e "$POLICY_NAG_PATH" ]; then
+        # Already moved aside by a previous run — idempotent.
+        ok "policy: nag schedule already neutralised (live absent, $nag_neutral_path present)"
+        state_put "policy.nag.neutralised" "1"
+        if [ ! -e "$POLICY_NAG_BACKUP" ]; then
+            # We neutralised it but somehow don't have the backup
+            # (shouldn't happen — back up happens before move). Be
+            # defensive: capture whatever is in the neutralised slot
+            # so restore still has something to put back.
+            if [ "$OYG_DRY_RUN" = "1" ]; then
+                printf 'DRY-RUN: cp -p %s %s\n' "$nag_neutral_path" "$POLICY_NAG_BACKUP"
+            else
+                run cp -p "$nag_neutral_path" "$POLICY_NAG_BACKUP" 2>/dev/null \
+                    && warn "policy: nag schedule backup was missing — captured from $nag_neutral_path" \
+                    || warn "policy: nag schedule — could not capture $nag_neutral_path to backup"
+            fi
+        fi
+    else
+        # Live file present. Back up once, then rename.
+        if [ ! -e "$POLICY_NAG_BACKUP" ]; then
+            if [ "$OYG_DRY_RUN" = "1" ]; then
+                printf 'DRY-RUN: cp -p %s %s\n' "$POLICY_NAG_PATH" "$POLICY_NAG_BACKUP"
+            else
+                if run cp -p "$POLICY_NAG_PATH" "$POLICY_NAG_BACKUP" 2>/dev/null; then
+                    ok "policy: nag schedule — backed up $POLICY_NAG_PATH to $POLICY_NAG_BACKUP"
+                else
+                    warn "policy: nag schedule — could not back up $POLICY_NAG_PATH — refusing to move"
+                fi
+            fi
+        else
+            ok "policy: nag schedule — backup already present at $POLICY_NAG_BACKUP (preserved)"
+        fi
+
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: mv %s %s\n' "$POLICY_NAG_PATH" "$nag_neutral_path"
+            ok "policy: nag schedule — would move $POLICY_NAG_PATH → $nag_neutral_path"
+            state_put "policy.nag.neutralised" "1"
+        else
+            if run mv "$POLICY_NAG_PATH" "$nag_neutral_path" 2>/dev/null; then
+                ok "policy: nag schedule — neutralised (moved aside to $nag_neutral_path)"
+                state_put "policy.nag.neutralised" "1"
+            else
+                warn "policy: nag schedule — could not move $POLICY_NAG_PATH — manual cleanup required"
+            fi
+        fi
+    fi
+
+    if [ "$sdx_store_fail" -gt 0 ]; then
+        err "policy: $sdx_store_fail SDX store(s) failed to fully decline — see warnings above"
+        # We still mark applied=1 if the flag files + EULA succeeded;
+        # status reports the per-store failures separately so verify
+        # surfaces them. The boot hook re-applies anyway.
+        state_put "policy.applied" "1"
+        return 0
+    fi
 
     state_put "policy.applied" "1"
     return 0
@@ -419,6 +875,51 @@ mod_policy_restore() {
         fi
     fi
 
+    # Job C — restore each SDX/ACR consent store from its backup.
+    # If the store is missing AND the backup is missing, we have
+    # nothing to do (the original state was "absent" — leave it alone).
+    # If the store is missing but the backup exists, we copy the
+    # backup back so the system sees the pre-hardened state.
+    for sdx_store_path in \
+        "$POLICY_SDX_STORE_CMN" \
+        "$POLICY_SDX_STORE_CACHE" \
+        "$POLICY_SDX_STORE_USER" \
+    ; do
+        sdx_bn=$(_policy_sdx_store_basename "$sdx_store_path")
+        sdx_bak=$(_policy_sdx_backup_path "$sdx_store_path" "$sdx_bn")
+        if [ ! -e "$sdx_bak" ]; then
+            # No backup means we never wrote it. Skip silently — no
+            # audit trail to lose, no state to undo.
+            continue
+        fi
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: cp -p %s %s\n' "$sdx_bak" "$sdx_store_path"
+        elif run cp -p "$sdx_bak" "$sdx_store_path" 2>/dev/null; then
+            ok "policy: sdx store $sdx_bn — restored $sdx_store_path from $sdx_bak"
+        else
+            warn "policy: sdx store $sdx_bn — cp $sdx_bak $sdx_store_path failed"
+            rc=1
+        fi
+    done
+
+    # Job D — put the marketing-nag schedule back.
+    nag_neutral_path="${POLICY_NAG_PATH}${POLICY_NAG_NEUTRALISED_SUFFIX}"
+    if [ -e "$nag_neutral_path" ] && [ ! -e "$POLICY_NAG_PATH" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: mv %s %s\n' "$nag_neutral_path" "$POLICY_NAG_PATH"
+        elif run mv "$nag_neutral_path" "$POLICY_NAG_PATH" 2>/dev/null; then
+            ok "policy: nag schedule — restored $POLICY_NAG_PATH from $nag_neutral_path"
+        else
+            warn "policy: nag schedule — mv $nag_neutral_path $POLICY_NAG_PATH failed"
+            rc=1
+        fi
+    elif [ -e "$POLICY_NAG_PATH" ]; then
+        ok "policy: nag schedule — already present at $POLICY_NAG_PATH"
+    else
+        # Neither file exists. Nothing to restore.
+        ok "policy: nag schedule — nothing to restore (neither live nor neutralised present)"
+    fi
+
     state_drop "policy.applied"
     state_drop "policy.flagfile"
     state_drop "policy.telnetflag"
@@ -427,6 +928,22 @@ mod_policy_restore() {
     state_drop "policy.eula.flipped"
     state_drop "policy.eula.allow"
     state_drop "policy.eula.last.before"
+    state_drop "policy.sdx.stores"
+    state_drop "policy.nag.path"
+    state_drop "policy.nag.backup"
+    state_drop "policy.nag.neutralised"
+    for sdx_store_path in \
+        "$POLICY_SDX_STORE_CMN" \
+        "$POLICY_SDX_STORE_CACHE" \
+        "$POLICY_SDX_STORE_USER" \
+    ; do
+        sdx_bn=$(_policy_sdx_store_basename "$sdx_store_path")
+        state_drop "policy.sdx.$sdx_bn.path"
+        state_drop "policy.sdx.$sdx_bn.backup"
+        state_drop "policy.sdx.$sdx_bn.last.before"
+        state_drop "policy.sdx.$sdx_bn.last.after"
+        state_drop "policy.sdx.$sdx_bn.applied"
+    done
 
     return $rc
 }
@@ -448,53 +965,119 @@ mod_policy_status() {
         print_status FAIL "policy: webOSbrew telnet-disable flag MISSING at $POLICY_TELNET_FLAG — telnetd may launch on next boot"
     fi
 
-    # Job B: EULA check.
+    # Job B: EULA check. Skip if absent but continue to Job C/D so the
+    # operator still gets the SDX/nag status. We used to `return` here
+    # when the EULA file was missing, but Job C and Job D are
+    # independent and must report independently.
     if [ ! -e "$POLICY_EULA" ]; then
-        print_status N/A "policy: $POLICY_EULA does not exist on this device"
-        return
-    fi
-
-    applied=$(state_get "policy.applied")
-    if [ "$applied" != "1" ]; then
-        # First-time / pre-harden: just report what's there.
-        cur=$(_policy_eula_count_accepted "$POLICY_EULA")
-        if [ "$cur" = "0" ]; then
-            print_status N/A "policy: $POLICY_EULA has zero accepted entries (not yet hardened)"
-        else
-            # Show offenders so the operator knows what would be declined.
-            offenders=$(_policy_eula_collect_ids "$POLICY_EULA" | tr '\n' ',' | sed 's/,$//')
-            print_status FAIL "policy: $POLICY_EULA has $cur accepted entr(y/ies): $offenders — not yet hardened"
-        fi
-        return
-    fi
-
-    cur=$(_policy_eula_count_accepted "$POLICY_EULA")
-    allow=$(state_get "policy.eula.allow")
-    flipped=$(state_get "policy.eula.flipped")
-    before=$(state_get "policy.eula.last.before")
-
-    if [ -n "$allow" ]; then
-        # Allow-list mode: check that each allow-listed id is false.
-        bad=""
-        for id in $allow; do
-            [ -z "$id" ] && continue
-            if grep -q "\"id\":\"$id\",\"accepted\":true" "$POLICY_EULA" 2>/dev/null; then
-                bad="$bad $id"
-            fi
-        done
-        bad=$(trim "$bad")
-        if [ -z "$bad" ]; then
-            print_status OK "policy: allow-list $allow all declined (last flipped=$flipped before=$before current=$cur)"
-        else
-            print_status FAIL "policy: allow-list entries still accepted:$bad (current=$cur)"
-        fi
+        print_status N/A "policy: $POLICY_EULA does not exist on this device (Job B skipped)"
     else
-        # Default: every entry must be false.
-        if [ "$cur" = "0" ]; then
-            print_status OK "policy: zero accepted entries (last flipped=$flipped before=$before)"
+        applied=$(state_get "policy.applied")
+        if [ "$applied" != "1" ]; then
+            # First-time / pre-harden: just report what's there.
+            cur=$(_policy_eula_count_accepted "$POLICY_EULA")
+            if [ "$cur" = "0" ]; then
+                print_status N/A "policy: $POLICY_EULA has zero accepted entries (not yet hardened)"
+            else
+                # Show offenders so the operator knows what would be declined.
+                offenders=$(_policy_eula_collect_ids "$POLICY_EULA" | tr '\n' ',' | sed 's/,$//')
+                print_status FAIL "policy: $POLICY_EULA has $cur accepted entr(y/ies): $offenders — not yet hardened"
+            fi
         else
-            offenders=$(_policy_eula_collect_ids "$POLICY_EULA" | tr '\n' ',' | sed 's/,$//')
-            print_status FAIL "policy: $cur accepted entr(y/ies): $offenders"
+            cur=$(_policy_eula_count_accepted "$POLICY_EULA")
+            allow=$(state_get "policy.eula.allow")
+            flipped=$(state_get "policy.eula.flipped")
+            before=$(state_get "policy.eula.last.before")
+
+            if [ -n "$allow" ]; then
+                # Allow-list mode: check that each allow-list id is false.
+                bad=""
+                for id in $allow; do
+                    [ -z "$id" ] && continue
+                    if grep -q "\"id\":\"$id\",\"accepted\":true" "$POLICY_EULA" 2>/dev/null; then
+                        bad="$bad $id"
+                    fi
+                done
+                bad=$(trim "$bad")
+                if [ -z "$bad" ]; then
+                    print_status OK "policy/eula: allow-list $allow all declined (last flipped=$flipped before=$before current=$cur)"
+                else
+                    print_status FAIL "policy/eula: allow-list entries still accepted:$bad (current=$cur)"
+                fi
+            else
+                # Default: every entry must be false.
+                if [ "$cur" = "0" ]; then
+                    print_status OK "policy/eula: zero accepted entries (last flipped=$flipped before=$before)"
+                else
+                    offenders=$(_policy_eula_collect_ids "$POLICY_EULA" | tr '\n' ',' | sed 's/,$//')
+                    print_status FAIL "policy/eula: $cur accepted entr(y/ies): $offenders"
+                fi
+            fi
         fi
+    fi
+
+    # Job C: SDX/ACR consent stores. For each store, show every code's
+    # current status so the operator sees what is on disk, and FAIL
+    # the line if any entry is still "A".
+    for sdx_store_path in \
+        "$POLICY_SDX_STORE_CMN" \
+        "$POLICY_SDX_STORE_CACHE" \
+        "$POLICY_SDX_STORE_USER" \
+    ; do
+        sdx_bn=$(_policy_sdx_store_basename "$sdx_store_path")
+        if [ ! -e "$sdx_store_path" ]; then
+            print_status N/A "policy/sdx.$sdx_bn: $sdx_store_path does not exist on this device"
+            continue
+        fi
+        # Parse the on-disk statusList. python3 gives a stable dump.
+        dump=$(_policy_sdx_status_dump "$sdx_store_path" 2>/dev/null)
+        if [ -z "$dump" ]; then
+            # python3 missing OR file unparseable — fall back to grep.
+            if ! have python3; then
+                print_status FAIL "policy/sdx.$sdx_bn: python3 missing — cannot verify $sdx_store_path"
+            else
+                print_status FAIL "policy/sdx.$sdx_bn: $sdx_store_path exists but is not parseable as JSON"
+            fi
+            continue
+        fi
+        # Build a compact "<code>=<status> ..." summary and flag any A.
+        bad_entries=""
+        summary=""
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            code=$(printf '%s' "$line" | awk '{print $1}')
+            status=$(printf '%s' "$line" | awk '{print $2}')
+            summary="$summary $code=$status"
+            if [ "$status" = "A" ]; then
+                bad_entries="$bad_entries $code"
+            fi
+        done <<EOF
+$dump
+EOF
+        summary=$(trim "$summary")
+        bad_entries=$(trim "$bad_entries")
+        if [ -n "$bad_entries" ]; then
+            print_status FAIL "policy/sdx.$sdx_bn: still Accepted:$bad_entries ($summary)"
+        else
+            print_status OK "policy/sdx.$sdx_bn:$summary"
+        fi
+    done
+
+    # Job D: marketing-nag activity schedule. OK if the live file is
+    # absent AND the backup exists (we neutralised it). N/A if neither
+    # file exists. FAIL if the live file is back (eula-service may
+    # have recreated it since last boot).
+    nag_neutral_path="${POLICY_NAG_PATH}${POLICY_NAG_NEUTRALISED_SUFFIX}"
+    if [ -e "$POLICY_NAG_PATH" ]; then
+        # Live file is present. We expect it to be gone (or at
+        # <nag_neutral_path>). Report FAIL — the boot hook will move
+        # it aside again on the next cycle.
+        print_status FAIL "policy/nag: live $POLICY_NAG_PATH is present (schedule can fire — will be moved aside on next boot)"
+    elif [ -e "$nag_neutral_path" ]; then
+        print_status OK "policy/nag: neutralised ($POLICY_NAG_PATH → $nag_neutral_path)"
+    elif [ -e "$POLICY_NAG_BACKUP" ]; then
+        print_status N/A "policy/nag: backup exists but neither live nor neutralised path does (eula-service may have rewritten — will be re-neutralised on next boot)"
+    else
+        print_status N/A "policy/nag: $POLICY_NAG_PATH does not exist on this device"
     fi
 }

@@ -56,6 +56,14 @@ pnv.lgtvcommon.com               # sdx cpv_secure — CSI content/viewing endpoi
 qcardservice.lgtvcommon.com      # sdx qcard — home-screen promo-card (QCARD) delivery
 lggalleryplus.com                # sdx lg_gallery_plus — LG Gallery+ content delivery
 
+# --- LG family hostnames found by grepping the device's own config trees ---
+# (discovered by ingredient, not guessed: extracted from /etc/configd,
+# /etc/palm, /var/preferences for *.lgtvcommon.com / *.nextlgsdp.com /
+# *.lggalleryplus.com and cross-checked against the shipped blocklists —
+# the ones NOT already covered were added here).
+cf-kic.lggalleryplus.com         # LG Gallery+ KIC (Key/ID Collector) beacon — KIC-stamped home-screen cards
+eic.lab.lgtvcommon.com           # LG EIC lab — Engagement/Event Collector variant surfaced in the device's own configd/preferences trees
+
 # --- LG firmware/update servers (network-level update block) ---
 # Complements the "Block system updates" setting. NOTE: if you ever WANT to
 # take an LG firmware update (e.g. for kernel security fixes), you must remove
@@ -123,6 +131,8 @@ he-eu-ai.lgthinq.com             # HomeEdge / AI voice backend (EU region)
 # All of these also carry device identity (SDX stamps an encrypted X-Device-ID
 # on every service request), which is why they sit in STRICT rather than SAFE.
 nextlgsdp.com                    # SDP core: auth / init / common / apps / onnow / search / nlp
+eic-gfts.nextlgsdp.com           # SDP EIC-gfts — Engagement Collector First-Time-Setup variant seen in /etc/configd
+ngfts.nextlgsdp.com              # SDP ngfts — First-Time-Setup provisioning endpoint (SDP-side counterpart to ngfts.lge.com)
 tv.wiselg.com                    # voice proxy, IoT push, sports, CDP, LG shop, account, buddy
 api.lgtviot.com                  # ThinQ IoT cloud (v3.0)
 wiseconfig.lgtvcommon.com        # WISE smartConfig delivery
