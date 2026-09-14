@@ -53,11 +53,35 @@ OYG_MOD_DEBLOAT=1
 #
 # Reversibility
 # -------------
-# restore(): systemctl start any unit that was previously active,
-# umount + chmod restore for any binary we bound, clear the boot-enforce
-# lists. Never restart a process that was merely killed (they are
-# luna-launched / preloaded and will respawn on demand if requested by
-# the system).
+# restore() means "return the unit to the state the vendor intends". On
+# this device "vendor intent" is what systemd would do on a clean boot,
+# which is determined by `systemctl is-enabled`. So restore restarts a
+# unit if EITHER:
+#   (a) the original .prev record says it was active (the boot hook has
+#       not yet had a chance to clobber the record — see Bug A below), OR
+#   (b) the unit is currently `enabled` — systemd would start it on a
+#       clean boot, so the user clearly wants the unit back.
+# Both checks are skipped in dry-run (no systemctl start).
+# Never restart a process that was merely killed — they are
+# luna-launched / preloaded and respawn on demand if requested.
+#
+# Bug A (state decay on every boot)
+# ---------------------------------
+# The boot hook re-runs `harden --only debloat` on every boot. By then
+# the unit is already stopped, so an unguarded `state_put` of the
+# `.prev` key overwrites the true original state with `inactive/...`.
+# Restore then sees `inactive` and refuses to restart. Fix: record
+# `.prev` ONLY when it is not already present — same intent as the
+# binaries path. The boot hook must never be allowed to clobber a
+# record of what the system looked like BEFORE harden was first run.
+#
+# Bug B (bind-mount mode poisoning)
+# --------------------------------
+# _mod_debloat_harden_one_bin used to `stat` the path BEFORE checking
+# whether it was already bind-mounted. If the path was already a bind,
+# stat saw /dev/null's mode (666), not the binary's real mode. Fix:
+# capture the mode AFTER the `is_bound` early-return, so the recorded
+# `.prev` always reflects a live, unmounted binary.
 #
 # Verified device facts (per the brief):
 #   Baseline MemAvailable ~434 MB, SwapFree ~186 MB, ~361 processes.
@@ -471,17 +495,22 @@ _mod_debloat_harden_one_bin() {
     fi
 
     orig=$(state_get "debloat.bin.${path}.prev")
-    if [ -z "$orig" ]; then
-        orig=$(_mod_debloat_path_mode "$path")
-        [ -z "$orig" ] && orig="755"
-        state_put "debloat.bin.${path}.prev" "$orig"
-    fi
 
     if [ "$(_mod_debloat_is_bound "$path")" = "1" ]; then
         ok "debloat: $path already bind-mounted to /dev/null (idempotent)" >&2
         state_put "debloat.bin.${path}.bound" "1"
         printf 'OK\n'
         return 0
+    fi
+
+    # Capture the mode AFTER the is_bound early-return (Bug B). If the
+    # path was already bind-mounted, stat would see /dev/null's mode
+    # (666), not the binary's real mode. Only sample a live, unmounted
+    # binary. `755` fallback is unchanged.
+    if [ -z "$orig" ]; then
+        orig=$(_mod_debloat_path_mode "$path")
+        [ -z "$orig" ] && orig="755"
+        state_put "debloat.bin.${path}.prev" "$orig"
     fi
 
     if run chmod 000 "$path" 2>/dev/null; then
@@ -551,7 +580,14 @@ mod_debloat_harden() {
             # basename-named process.
             prev_proc_state='unknown'
         fi
-        state_put "debloat.unit.${id}.prev" "${prev_unit_state}|proc=${prev_proc_state}"
+        # Record `.prev` ONLY when it is not already present (Bug A).
+        # The boot hook re-runs harden --only debloat on every boot, by
+        # which time the unit is already stopped; an unguarded write
+        # would clobber the true original state with `inactive/...` and
+        # silently break restore.
+        if [ -z "$(state_get "debloat.unit.${id}.prev")" ]; then
+            state_put "debloat.unit.${id}.prev" "${prev_unit_state}|proc=${prev_proc_state}"
+        fi
 
         unit_stopped=0
         unit_note=""
@@ -690,12 +726,27 @@ mod_debloat_restore() {
 
         prev=$(state_get "debloat.unit.${id}.prev")
         was_active=$(printf '%s' "$prev" | awk -F'|' '{print $1}' | cut -d/ -f1)
+        is_enabled=$(_mod_debloat_query "$unit" is-enabled)
 
+        # Bug C: restore means "return to vendor intent". A unit is
+        # restored if EITHER the .prev record says it was active OR
+        # the unit is currently `enabled` (systemd would start it on
+        # a clean boot). Dry-run stays a no-op for starts — `run`
+        # short-circuits systemctl start to a `DRY-RUN:` line.
+        start_reason=""
         if [ "$was_active" = "active" ]; then
+            start_reason="recorded active"
+        elif [ "$is_enabled" = "enabled" ] \
+            && [ "$(_mod_debloat_unit_present "$unit")" = "1" ] \
+            && [ "$OYG_DRY_RUN" != "1" ]; then
+            start_reason="unit is enabled"
+        fi
+
+        if [ -n "$start_reason" ]; then
             if _mod_debloat_stop_unit "$unit" 2>/dev/null || true; then
                 if [ "$(_mod_debloat_unit_present "$unit")" = "1" ]; then
                     if run systemctl start "$unit" 2>/dev/null; then
-                        ok "debloat: $id unit <$unit> started (restored)"
+                        ok "debloat: $id unit <$unit> started (restored: $start_reason)"
                     else
                         warn "debloat: start $unit failed (will leave stopped)"
                         rc=1
@@ -703,7 +754,7 @@ mod_debloat_restore() {
                 fi
             fi
         else
-            ok "debloat: $id left stopped (unit was not active originally: $was_active)"
+            ok "debloat: $id left stopped (recorded=$was_active, enabled=$is_enabled)"
         fi
 
         # Do NOT restart killed processes — they are luna-launched /
