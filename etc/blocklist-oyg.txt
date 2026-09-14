@@ -40,6 +40,22 @@ bitv.eu                          # Bitmovin / Smart-TV ad-tracking
 # --- LG smart-ad server interactive overlay (click-through on top of ads) ---
 aic.ads.lgtvcommon.com           # ad overlay interactive endpoint (VAST/click)
 
+# --- LG Service Delivery Platform (SDX) — telemetry / diagnostics / promo ----
+# SOURCE OF TRUTH: the TV's OWN /mnt/lg/cmn_data/sdp/sdx/server_addr_version.conf
+# (SDX = com.webos.service.sdx, LG's "Service Delivery eXtension"). SDX also
+# downloads the EULA and the ACR config, which is why it CANNOT be neutralised
+# at the binary level — bind-mounting /dev/null over /usr/sbin/sdx silently
+# kills the Settings UI (see modules/debloat.sh for the full write-up).
+# Blocking its endpoints is the alternative. Measured before this block: only
+# 2 of SDX's 14 declared endpoints were covered by any list we ship.
+rdx2.nextlgsdp.com               # sdx rdx_secure — remote diagnostics + device-log upload
+ibs.nextlgsdp.com                # sdx ibis_secure — IBIS telemetry
+ibsstat.nextlgsdp.com            # sdx ibis_stat_secure — IBIS statistics
+nudge.lgtvcommon.com             # sdx nudge_secure / nudge_log_secure — notification nudge + log
+pnv.lgtvcommon.com               # sdx cpv_secure — CSI content/viewing endpoint
+qcardservice.lgtvcommon.com      # sdx qcard — home-screen promo-card (QCARD) delivery
+lggalleryplus.com                # sdx lg_gallery_plus — LG Gallery+ content delivery
+
 # --- LG firmware/update servers (network-level update block) ---
 # Complements the "Block system updates" setting. NOTE: if you ever WANT to
 # take an LG firmware update (e.g. for kernel security fixes), you must remove
@@ -92,3 +108,22 @@ eic-ngfts.lge.com                # LG EIC (Event/Engagement Collector) home-scre
 common.lgthinq.com               # ThinQ cloud control plane (device↔cloud)
 connect-client.lgthinq.com       # ThinQ Connect client beacon
 he-eu-ai.lgthinq.com             # HomeEdge / AI voice backend (EU region)
+# --- LG Service Delivery Platform (SDX): core + control plane ---
+# From the same server_addr_version.conf as the SAFE-tier SDX block above.
+# These are the *functional* halves of SDX, so blocking them breaks features:
+#   nextlgsdp.com    the delivery platform itself (sdp_auth / init / common /
+#                    apps / onnow / search / nlp / airplay) — the LG APP STORE
+#                    and app updates stop working.
+#   tv.wiselg.com    voice_proxy_secure, iot_push_secure, iot_sports_secure,
+#                    cdp_service_secure, lgshop_secure, cpauth_secure,
+#                    cdpbeacon_secure, rdxdev_secure, wise_account, buddy,
+#                    lgshoplog_secure — LG account, shop, push, voice proxy.
+#   api.lgtviot.com  ThinQ IoT v3.0 cloud endpoint.
+#   wise*.lgtvcommon.com  the WISE recommendation / smartConfig / resource plane.
+# All of these also carry device identity (SDX stamps an encrypted X-Device-ID
+# on every service request), which is why they sit in STRICT rather than SAFE.
+nextlgsdp.com                    # SDP core: auth / init / common / apps / onnow / search / nlp
+tv.wiselg.com                    # voice proxy, IoT push, sports, CDP, LG shop, account, buddy
+api.lgtviot.com                  # ThinQ IoT cloud (v3.0)
+wiseconfig.lgtvcommon.com        # WISE smartConfig delivery
+wiseresource.lgtvcommon.com      # WISE resource delivery
