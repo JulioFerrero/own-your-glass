@@ -86,7 +86,7 @@ fi
 
 CONNMANCTL=/usr/bin/connmanctl
 
-DNS_BIND=127.0.0.2
+DNS_BIND=${OYG_DNS_BIND:-$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)}
 DNS_PORT=53
 AUDIT_LOG="$OYG_ROOT/dns-audit.log"
 HOSTS_FILE="$OYG_ROOT/hosts"
