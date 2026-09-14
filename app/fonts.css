@@ -1,0 +1,20 @@
+/* Bundled so the TV renders the same type as the design: IBM Plex Sans
+   (variable) for text, IBM Plex Mono for readouts. Both SIL OFL 1.1. */
+@font-face{
+  font-family:"IBM Plex Sans";
+  src:url("fonts/ibmplexsans-400.woff2") format("woff2");
+  font-weight:100 700;
+  font-display:swap;
+}
+@font-face{
+  font-family:"IBM Plex Mono";
+  src:url("fonts/ibmplexmono-400.woff2") format("woff2");
+  font-weight:400;
+  font-display:swap;
+}
+@font-face{
+  font-family:"IBM Plex Mono";
+  src:url("fonts/ibmplexmono-600.woff2") format("woff2");
+  font-weight:600;
+  font-display:swap;
+}
