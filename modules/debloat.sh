@@ -1,122 +1,18 @@
 OYG_MOD_DEBLOAT=1
 
-# debloat.sh — opt-in reclamation of RAM + attack surface by stopping
-# unused feature services and neutralising one preloaded app.
-#
-# Why this is its own module (and not "more entries in services.sh")
-# -----------------------------------------------------------------
-# The brief calls for TWO enforcement classes mixed together:
-#
-#   1. systemd-managed units — same shape as services.sh:
-#        <id>|<unit>|<process>
-#      Treat as class-1 (systemctl stop really kills the process)
-#      OR class-2 (luna-launched; stop is a no-op, kill is required),
-#      per the verified device facts in FINDINGS.md (F33a).
-#
-#   2. luna-launched BINARIES — no systemd unit, sometimes a permanent
-#      preload. Examples on this device:
-#        /usr/bin/com.webos.app.voice       (preloaded app, ~51 MB)
-#        /usr/sbin/lg.thinqai.adapter
-#        /usr/sbin/airessrvallocator
-#        /usr/sbin/com.webos.service.iotproxy
-#        /usr/sbin/sportsalert
-#      Neutralised the same way the `voice` module neutralises
-#      /usr/sbin/voiceinput{,_hidraw},conductor:
-#        chmod 000 <binary>          (best-effort; /usr is read-only)
-#        mount --bind /dev/null      (the proven technique — works on
-#          <binary>                    read-only /usr)
-#        kill -TERM/-KILL the process named by basename(<binary>)
-#
-# Why we cannot use systemctl mask
-# ---------------------------------
-# Same reason as services.sh: /etc is read-only on this device, so
-# `systemctl mask <unit>` ALWAYS fails with
-#   Failed to mask unit: File /etc/systemd/system/<x>.service already
-#   exists.
-# The enforcement model is therefore "stop now + stop again on every
-# boot", exactly as services.sh does. Persisted under $OYG_ROOT:
-#   debloat.units.stopped   — unit names to stop at every boot
-#   debloat.procs.kill      — process names to kill at every boot
-# Both are re-applied by the init.d boot hook when state contains
-# debloat.applied=1.
-#
-# Opt-in
-# ------
-# OYG_DEBLOAT=1   — required. Without it, harden() refuses and explains.
-# This module BREAKS features by design: family-care, buddy-connector,
-# alwaysready, AI inference, avahi/mDNS, the webOS rule engine, and the
-# voice-app UI. All of those features have backends that are already
-# blocked by the `network` module (ThinQ cloud), the `voice` module
-# (Magic Remote mic pipeline), or the `policy` module (LG consents
-# declined) — so disabling the front-ends is the natural completion of
-# the chain and reclaims the RAM + attack surface they would have used.
-#
-# Reversibility
-# -------------
-# restore() means "return the unit to the state the vendor intends". On
-# this device "vendor intent" is what systemd would do on a clean boot,
-# which is determined by `systemctl is-enabled`. So restore restarts a
-# unit if EITHER:
-#   (a) the original .prev record says it was active (the boot hook has
-#       not yet had a chance to clobber the record — see Bug A below), OR
-#   (b) the unit is currently `enabled` — systemd would start it on a
-#       clean boot, so the user clearly wants the unit back.
-# Both checks are skipped in dry-run (no systemctl start).
-# Never restart a process that was merely killed — they are
-# luna-launched / preloaded and respawn on demand if requested.
-#
-# Bug A (state decay on every boot)
-# ---------------------------------
-# The boot hook re-runs `harden --only debloat` on every boot. By then
-# the unit is already stopped, so an unguarded `state_put` of the
-# `.prev` key overwrites the true original state with `inactive/...`.
-# Restore then sees `inactive` and refuses to restart. Fix: record
-# `.prev` ONLY when it is not already present — same intent as the
-# binaries path. The boot hook must never be allowed to clobber a
-# record of what the system looked like BEFORE harden was first run.
-#
-# Bug B (bind-mount mode poisoning)
-# --------------------------------
-# _mod_debloat_harden_one_bin used to `stat` the path BEFORE checking
-# whether it was already bind-mounted. If the path was already a bind,
-# stat saw /dev/null's mode (666), not the binary's real mode. Fix:
-# capture the mode AFTER the `is_bound` early-return, so the recorded
-# `.prev` always reflects a live, unmounted binary.
-#
-# Verified device facts (per the brief):
-#   Baseline MemAvailable ~434 MB, SwapFree ~186 MB, ~361 processes.
-#   com.webos.app.voice is NOT a systemd unit; launched by app manager.
-#   com.webos.service.familycare runs under iotjs, so pidof familycare
-#   does not match — rely on systemctl stop only.
-#   com.webos.app.voice: ~51 MB preload; binary is /usr/bin/com.webos.app.voice.
+# debloat.sh — opt-in RAM + attack-surface reclamation: stop unused feature
+# units (same shape as services.sh) and bind-neutralise luna-launched
+# preloaded binaries (chmod 000 + mount --bind /dev/null; /usr read-only).
+# OYG_DEBLOAT=1 REQUIRED — harden() refuses without it. Disables features
+# (family/buddy/alwaysready/AI/avahi/ruleengine/voice UI) whose backends
+# are already blocked by network/voice/policy. mask impossible (/etc
+# read-only) → "stop now + stop again every boot". Bugs A/B/C documented
+# inline; never restart merely-killed processes. Details: docs/FINDINGS.md (F40, F40b, F40c, F42)
 
-# --- spec: systemd units -----------------------------------------------------
-# Format: <id>|<unit>|<process>
-#
-# Stop unit, kill the matching process if it is running. Same shape as
-# services.sh. Process column may be empty ONLY when the unit is known
-# not to have a matching pidof-able process name (e.g. familycare,
-# which runs under iotjs and never matches `pidof familycare`).
-#
-# Tier C (operator-requested):
-#   wowplay   LG wireless-display / screen-mirroring receiver.
-#             Disabling it removes the "mirror your screen to the TV"
-#             feature; UPnP/DLNA (upnpd, dmost, dmr, umediaserver) is
-#             deliberately left RUNNING on this device. wowplay is
-#             Type=static, so systemctl stop + kill is permanent and
-#             ls-hubd does not respawn it.
-#
-#   uploadd   log-upload daemon (/usr/sbin/uploadd -v). This is the
-#             component that ships device logs off-box — i.e. telemetry.
-#             Disabling it stops log upload; local logging is unaffected.
-#             uploadd's luna-service2 unit is Type=dynamic, which means
-#             ls-hubd will re-exec it on the next LS2 call to
-#             com.palm.uploadd — so `systemctl stop` + `kill` only
-#             works until the next caller. The structural fix is to
-#             bind-mount /dev/null over the binary itself, listed in
-#             DEBLOAT_BINARIES_SPEC below. The unit entry is removed
-#             from this spec to avoid misleading status reports; the
-#             boot hook re-establishes the bind every boot.
+# --- spec: systemd units — format <id>|<unit>|<process> (same as services.sh).
+# wowplay (Type=static): stop+kill is permanent. uploadd (Type=dynamic) is
+# respawned by ls-hubd on the next LS2 call — handled in the binaries spec
+# via bind-mount, not here (F40c).
 DEBLOAT_UNITS_SPEC='
 mycar|com.webos.service.mycar.service|com.webos.service.mycar
 familycare|com.webos.service.familycare.service|
@@ -129,18 +25,10 @@ ruleengine|com.webos.service.ruleengine.service|com.webos.service.ruleengine
 wowplay|wowplay.service|wowplay
 '
 
-# --- spec: luna-launched binaries -------------------------------------------
-# Absolute paths only. Verified at runtime: if the binary is absent on
-# this build of webOS we skip gracefully and say so.
-#
-# The `<path>|<proc>` form sets the kill-name override; the bind target
-# is always <path>. The `uploadd` entry is the structural fix for
-# com.palm.uploadd: its LS2 service is Type=dynamic, so ls-hubd respawns
-# it on the next call to luna://com.palm.uploadd and `systemctl stop`
-# + `kill` is unwinnable — only `mount --bind /dev/null` over the
-# binary itself stops the respawn (the exec'd process opens /dev/null
-# and exits). wowplay is Type=static and is therefore handled in
-# DEBLOAT_UNITS_SPEC; it does NOT appear here.
+# --- spec: luna-launched binaries — absolute paths; absent paths are
+# skipped gracefully at runtime. `<path>|<proc>` sets a kill-name override
+# (the bind target is always <path>); uploadd needs `<path>|uploadd` because
+# its LS2 service is Type=dynamic and only the bind stops the respawn (F40c).
 DEBLOAT_BINARIES_SPEC='
 /usr/bin/com.webos.app.voice
 /usr/sbin/lg.thinqai.adapter
@@ -152,68 +40,24 @@ DEBLOAT_BINARIES_SPEC='
 /usr/sbin/uploadd|uploadd
 '
 
-# Per-entry "what feature is lost" — Tier B (boot-enforced):
-#   /usr/palm/services/com.webos.service.dial/discovery-server.js|ss.gateway
-#     DIAL second-screen / casting discovery server (TCP 8008). Runs
-#     as /usr/bin/node with argv[0] literally "ss.gateway" so
-#     `pidof ss.gateway` matches the running process (NOT the basename
-#     of the script). The "|ss.gateway" suffix on the spec line
-#     overrides the kill-by-basename default with the real process
-#     name. Was burning CPU continuously (6m09s and climbing) with no
-#     user request. Kills Chromecast / DIAL "cast to TV" discovery;
-#     the launcher home screen still works.
-#   /usr/sbin/iconnectivity
-#     Phone-connectivity helper (LG TV Companion / mobile pairing).
-#     Kills the "pair your phone" code path; casting via the ThinQ
-#     app also relies on it.
+# Per-entry "what feature is lost" — Tier B:
+#   ss.gateway (discovery-server.js|ss.gateway) — DIAL/casting discovery;
+#     the kill-name override matches argv[0]="ss.gateway" (F40b).
+#   iconnectivity — LG phone-pairing / TV Companion helper.
 #   /usr/sbin/sdx — DELIBERATELY NOT NEUTRALISED. See the warning below.
 #
 # ---------------------------------------------------------------------------
 # DO NOT add /usr/sbin/sdx back to DEBLOAT_BINARIES_SPEC.
-#
-# It looks like pure vendor surface — and it is LG's device-identity /
-# software-delivery daemon (luna://com.webos.service.sdx/getDeviceUuid
-# returns a device UUID plus a billing ID) — but bind-mounting /dev/null
-# over it SILENTLY BREAKS THE TV'S SETTINGS UI.
-#
-# Observed failure mode (LG OLED55B56LA, webOS 10.3.1):
-#   * Pressing the remote's gear/Settings button does NOTHING AT ALL. No
-#     error, no spinner, no dialog — the button simply appears dead.
-#   * surface-manager still logs `com.webos.app.quicksettings
-#     visible:true`, so the system log looks perfectly healthy.
-#   * The launcher's gear icon fails identically (both the remote key and
-#     the launcher route through com.webos.app.quicksettings, launched by
-#     com.webos.service.systemUIManager).
-#   * Restoring the sdx binary makes the panel work again immediately.
-#
-# THE RELIABLE PASS/FAIL SIGNAL: when the panel really initialises,
-# surface-manager emits
-#     com.webos.app.quicksettings NL_QUICKSETTINGS_EDITMODE {...}
+# Bind-neutralising sdx SILENTLY BREAKS THE TV'S SETTINGS UI (gear button
+# dies with no error while surface-manager logs a healthy `visible:true`).
 # When sdx is neutralised that line is NEVER emitted — the window is marked
-# visible but never initialises. Grep for QUICKSETTINGS_EDITMODE after a
-# gear press to test any change that touches these binaries.
-#
-# The general lesson: "luna-launched binary" does NOT imply optional
-# front-end. Before neutralising one, confirm the TV's own UI still works —
-# especially the settings/quick-settings panel, which fails with no
-# user-visible error path.
-#
-# sdx's network egress is already constrained by the `network` module (LG
-# domains are blocked), so leaving the binary alive does not leave its
-# telemetry unblocked.
+# visible but never initialises: grep QUICKSETTINGS_EDITMODE after a gear
+# press (F42). Its egress is already blocked by the `network` module.
 # ---------------------------------------------------------------------------
-#   /usr/sbin/uploadd|uploadd
-#     Log-upload daemon (sends device logs to LG — telemetry). The
-#     `<path>|uploadd` form uses an explicit kill-name override only
-#     because basename(uploadd) happens to equal uploadd (kept
-#     explicit for symmetry with ss.gateway). The LS2 service
-#     com.palm.uploadd is `Type=dynamic`, so ls-hubd respawns the
-#     binary on the next luna-send to it — the only structural fix is
-#     the bind-mount itself. The bind survives the process; even when
-#     ls-hubd re-execs the path, the new process opens /dev/null and
-#     exits immediately (verified: pidof uploadd is empty after the
-#     bind, and a deliberate luna-send to com.palm.uploadd returns
-#     `com.palm.uploadd is not running` with the PID still empty).
+#   /usr/sbin/uploadd|uploadd — log-upload daemon (telemetry). The LS2
+#     service com.palm.uploadd is Type=dynamic, so ls-hubd respawns the
+#     binary on the next luna-send; only the bind stops it — the re-exec'd
+#     process opens /dev/null and exits (F40c).
 
 DEBLOAT_UNITS_STOPPED_LIST="$OYG_ROOT/debloat.units.stopped"
 DEBLOAT_PROCS_KILL_LIST="$OYG_ROOT/debloat.procs.kill"

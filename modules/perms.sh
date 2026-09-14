@@ -1,12 +1,10 @@
 OYG_MOD_PERMS=1
 
-# perms.sh — tighten modes on world-writable, root-executed code paths.
-#
-# F16: /media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service
-# F17: /media/system/apps/usr/palm/services/com.webos.ghp.runtime/{lib,conf}
-#
-# This is invasive — it may break webOSbrew updates and the Google Home
-# runtime. The user must explicitly opt in via OYG_AGGRESSIVE=1.
+# perms.sh — tighten modes on world-writable, root-executed code paths
+# (F16: webOSbrew hbchannel service; F17: com.webos.ghp.runtime).
+# Invasive: may break webOSbrew updates + Google Home runtime — the user
+# must opt in via OYG_AGGRESSIVE=1.
+# Details, verification history and findings: docs/FINDINGS.md (F16, F17)
 
 PERMS_TARGETS='
 /media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service:0755

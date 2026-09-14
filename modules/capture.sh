@@ -1,16 +1,10 @@
 OYG_MOD_CAPTURE=1
 
-# capture.sh — neutralise the screen-framebuffer leak.
-#
-# /tmp/capture.rgb (640x360 RGB24) is written every ~3s by
-# com.webos.service.oledepl via com.webos.service.capture/executeOneShot.
-# It is world-readable AND visible inside app sandboxes.
-#
-# Strategy (in order, with fallback):
-#   1) chattr +i  — if the filesystem supports immutable
-#   2) chmod 000 / 0600 plus a watcher that re-asserts the mode (the
-#      writer re-creates the file, so a one-shot chmod is not enough)
-#   3) install the watcher from the boot hook
+# capture.sh — neutralise the screen-framebuffer leak: /tmp/capture.rgb
+# (640x360 RGB24) is written every ~3s by com.webos.service.oledepl and
+# is world-readable inside app sandboxes (F9, F19). Strategy ladder:
+# chattr +i → chmod 000/0600 + re-asserting watcher → bind-mount /dev/null
+# over vtCaptureTestSuite (F10, F14e). Details: docs/FINDINGS.md (F9, F19, F10, F14e)
 
 CAPTURE_PATH=/tmp/capture.rgb
 VTCAP_BIN=/usr/bin/vtCaptureTestSuite

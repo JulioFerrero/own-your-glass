@@ -1,38 +1,13 @@
 OYG_MOD_MIC=1
 
-# mic.sh — neutralise the microphone capture path.
-#
-# WHY THE OLD amixer APPROACH WAS REMOVED
-# ---------------------------------------
-# The previous module tried `amixer` controls (Capture, Mic, numid=628 /
-# "Adc Open") on card 0. On this device the writable-by-us control is
-# driver-owned and returns "Operation not permitted" when closed, so the
-# module could only ever report PARTIAL. The driver does not expose a
-# user-mutable mute for the capture gain. amixer is therefore a dead end
-# on this hardware — kept here only as a comment for posterity.
-#
-# THE NEW APPROACH (verified working on the device)
-# -------------------------------------------------
-# We cut the pipe at the device-node level. Every ALSA capture PCM is a
-# device node under /dev/snd named pcmC<card>D<dev>c. Bind-mounting
-# /dev/null over each one makes every open() on that PCM return ENXIO /
-# "Inappropriate ioctl for device". arecord therefore produces 0 bytes
-# (or fails) and no audio reaches user space. Playback nodes
-# (pcmC*Dp) are deliberately left alone — playback is preserved.
-#
-# Evidence on the device:
-#   BEFORE: arecord -D hw:0,10 ... | wc -c   ->  64000 bytes
-#   APPLY : chmod 000 /dev/snd/pcmC0D10c
-#           mount --bind /dev/null /dev/snd/pcmC0D10c
-#   AFTER : arecord -D hw:0,10 ...
-#           -> "arecord: main:831: audio open error: Inappropriate ioctl for device"
-#           -> 0 bytes
-#   PLAYBACK: paplay -d pcm_output <file>  -> rc=0   (unaffected)
-#
-# The capture nodes on this device are:
-#   pcmC0D10c  pcmC0D11c  pcmC0D12c
-#   pcmC0D13c  pcmC0D14c  pcmC1D0c
+# mic.sh — neutralise the microphone capture path at the device-node level.
+# amixer was a dead end on this hardware: the writable capture control is
+# driver-owned and returns "Operation not permitted" when closed (F8). We
+# bind-mount /dev/null over each capture PCM node (/dev/snd/pcmC<card>D<dev>c)
+# so open() gets ENXIO and arecord yields 0 bytes; nodes are enumerated
+# dynamically (walk /dev/snd + cross-check /proc/asound/pcm).
 # Playback nodes (NEVER touched): pcmC0D0p … pcmC0D7p.
+# Details, verification history and findings: docs/FINDINGS.md (F8, F38a)
 
 # State keys (per node):
 #   mic.node.<basename>.mode.orig  — original mode (e.g. "660")

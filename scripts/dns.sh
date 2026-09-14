@@ -2,60 +2,33 @@
 # dns.sh — operator entry point for the on-device DNS sinkhole resolver.
 #
 # ==== POST-MORTEM — WHY THERE IS NO CONNMAN CODE HERE ANYMORE ====
-# Previous revisions wired the sinkhole in by editing ConnMan's service
-# settings (/var/lib/connman/<svc>/settings) and nudging connmand to
-# re-read them. That TOOK THE TV OFF THE NETWORK for ~30 minutes. Two
-# stacked bugs:
-#   1. Service-dir selection picked the first dir under /var/lib/connman/
-#      that has a `settings` file — that is the p2p_persistent_* ("DIRECT-W1")
-#      pseudo-service, NOT the connected Wi-Fi service (wifi_*_managed_psk_*).
-#   2. Nudging used `systemctl reload connman`, and connman.service has NO
-#      ExecReload, so systemd fell back to SIGHUP to connmand. On this LG
-#      build that tears the Wi-Fi down — the unit's own comment reads
-#      "Restart also wpa-supplicant in order to bring back everything into
-#      a sane state." The link dropped and never recovered. The settings
-#      file was byte-identical to its backup afterwards: the SIGNAL alone
-#      caused it.
-#
+# Editing ConnMan's service settings + nudging connmand TOOK THE TV OFF
+# THE NETWORK for ~30 min: (1) the dir-selection grabbed the p2p_pseudo
+# service, not the wifi service; (2) `systemctl reload connman` has no
+# ExecReload → SIGHUP → on this build that tears the Wi-Fi down; the
+# settings file was byte-identical afterwards — the SIGNAL alone did it.
 # HARD RULE: NEVER signal, reload or restart connmand from this toolkit.
-# The sinkhole is hooked in via a bind-mount over /etc/resolv.conf instead
-# (below), which needs no daemon interaction at all. oyg_guard_connman_route
-# in lib/common.sh greps these files and fails loudly if any of the
-# forbidden patterns (kill -HUP, kill -s HUP, killall -HUP,
-# systemctl reload connman, systemctl restart connman, the old
-# Nameservers=127.0.0.2; settings append) is reintroduced.
+# oyg_guard_connman_route (lib/common.sh) fails loudly if any forbidden
+# pattern (kill -HUP / systemctl reload|restart connman /
+# Nameservers=127.0.0.2;) reappears here.
 # ==== END POST-MORTEM ====
 #
-# How it hooks in now (resolv.conf; no daemon interaction):
-#   - a managed resolv.conf ($OYG_ROOT/resolv.conf.sinkhole) lists our
-#     sinkhole FIRST (127.0.0.2) and the real upstream SECOND (fallback:
-#     keeps DNS alive if the resolver dies), and is bind-mounted over
-#     /etc/resolv.conf (a symlink to /var/lib/misc/resolv.conf). /etc is
-#     read-only, but bind-mounts work — the same technique as layer 1.
-#   - the resolver is started and PROVEN answering on 127.0.0.2:53 BEFORE
-#     the override goes in, so there is never a no-DNS window.
-#   - ConnMan regenerates resolv.conf, so the watchdog re-asserts the
-#     managed file in place every loop and re-mounts only if the bind
-#     actually vanished (idempotent, never stacks mounts).
-#   - a mandatory auto-revert timer is armed at apply time: if the shell
-#     dies before `confirm`, the override unmounts itself after ~180 s and
-#     the TV heals.
+# Hook-in (resolv.conf bind-mount; no daemon interaction): a managed file
+# lists the sink FIRST (bind from $OYG_ROOT/dns.bind: 127.0.0.2 default,
+# 127.0.0.1 under Variant C) and the real upstream as fallback; the
+# resolver is PROVEN answering BEFORE the override mounts (no no-DNS
+# window); the watchdog re-asserts in place (ConnMan regenerates
+# resolv.conf); every apply arms a 180 s auto-revert unless confirmed.
+# Details: docs/FINDINGS.md (F14g, F44).
 #
 # Subcommands:
-#   start      bring the resolver up, then apply + confirm the override
-#              (what oyg layer 4 / the boot hook call; permanent)
-#   apply [--keep]
-#              mount the resolv.conf override. Arms the auto-revert timer;
-#              `--keep` (or the `confirm` subcommand) disarms it.
-#   ensure     idempotent re-assert (used by the watchdog): rewrite the
-#              managed file in place, re-mount if the bind is gone
-#   confirm    disarm the auto-revert timer (make the override permanent)
-#   revert     undo the resolv.conf override (umount). Resolver stays up.
-#   stop       full teardown: watchdog, timer, override, resolver
-#   status     show what is running / hooked in / upstream
-#   log        tail the audit log (non-blocking if no resolver yet)
-#   test [domain ...]
-#              live nslookup-style probes against 127.0.0.2
+#   start      resolver up, then apply + confirm (what layer 4 / boot hook call)
+#   apply [--keep]   mount the override; auto-revert armed unless --keep
+#   ensure     idempotent re-assert (watchdog)
+#   confirm    disarm the auto-revert timer
+#   revert     umount the override (resolver stays up)
+#   stop       full teardown — also undoes Variant C via rollback-c.sh
+#   status / log / test [domain ...]
 #
 # State keys (under $OYG_ROOT/state, written via lib/common.sh):
 #   dns.applied=1          resolv.conf override in place
