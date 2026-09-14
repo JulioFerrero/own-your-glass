@@ -243,11 +243,6 @@ function stateOf(s) {
   if (s.lines.some(function (x) { return x.level === "WARN"; })) return "warn";
   return "ok";
 }
-function wordFor(st, n) {
-  if (st === "fail") return "needs a look";
-  if (st === "warn") return "note";
-  return n === 1 ? "1 check" : n + " checks";
-}
 function esc(x) { return String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
 
 /* ---------- focus: one cursor, spatial, never colour alone ---------- */

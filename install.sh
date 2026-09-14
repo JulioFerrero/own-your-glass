@@ -280,7 +280,7 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # re-association has taken 7-27s in every observed restart).
     if [ "\$(cat $OYG_DST/dns.bind 2>/dev/null)" = "127.0.0.1" ] \
         && [ -x $OYG_DST/connman.sh.patched ] \
-        && ! awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
+        && ! awk '\$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
         echo "[boot-hook] C: mounting patched connman launcher (-r)"
         mount --bind $OYG_DST/connman.sh.patched /etc/systemd/system/scripts/connman.sh \
             && systemctl daemon-reload \
