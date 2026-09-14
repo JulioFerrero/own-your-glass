@@ -7,71 +7,73 @@
 <style>
   :root{
     --bg:#070b10; --panel:#0d141c; --panel2:#111a24; --line:#1e2a38;
-    --fg:#e8eef5; --dim:#8fa3b8; --ok:#3ddc84; --bad:#ff5c5c; --warn:#ffb020; --focus:#4da3ff;
+    --fg:#e8eef5; --dim:#7d8fa3; --ok:#3ddc84; --bad:#ff5c5c; --warn:#ffb020;
+    --focus:#ffffff; --focusbg:#1d4ed8;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   html,body{height:100%; background:var(--bg); color:var(--fg); overflow:hidden;
-    font:22px/1.4 "Helvetica Neue",Helvetica,Arial,sans-serif; -webkit-user-select:none;}
+    font:24px/1.35 "Helvetica Neue",Helvetica,Arial,sans-serif; -webkit-user-select:none;}
 
-  header{display:flex; align-items:center; gap:22px; padding:22px 34px;
+  header{display:flex; align-items:center; gap:24px; padding:20px 40px;
     border-bottom:2px solid var(--line); background:var(--panel);}
-  header h1{font-size:34px; font-weight:700; letter-spacing:.4px;}
-  header .sub{color:var(--dim); font-size:19px;}
-  #health{margin-left:auto; font-size:20px; font-weight:600; padding:8px 18px;
+  header h1{font-size:34px; font-weight:700;}
+  header .sub{color:var(--dim); font-size:18px;}
+  #health{margin-left:auto; font-size:20px; font-weight:700; padding:8px 20px;
     border-radius:24px; border:2px solid var(--line);}
   #health.good{color:var(--ok); border-color:var(--ok);}
   #health.bad{color:var(--bad); border-color:var(--bad);}
   #health.busy{color:var(--warn); border-color:var(--warn);}
 
-  main{display:grid; grid-template-columns:1.15fr 1fr; height:calc(100% - 88px);}
-  .pane{padding:20px 34px; overflow:auto;}
-  .pane.left{border-right:2px solid var(--line);}
-  h2{font-size:15px; letter-spacing:2px; text-transform:uppercase; color:var(--dim);
-    margin-bottom:12px; font-weight:700;}
+  .body{display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 300px;
+    height:calc(100% - 84px);}
+  .pane{padding:18px 40px; overflow:hidden;}
+  .pane.mods{border-right:2px solid var(--line);}
+  .pane.foot{grid-column:1 / -1; border-top:2px solid var(--line); background:#05090d;}
+  h2{font-size:14px; letter-spacing:2.5px; text-transform:uppercase; color:var(--dim);
+    margin-bottom:14px; font-weight:700;}
 
-  .row{display:flex; align-items:center; gap:14px; padding:13px 16px; border-radius:12px;
-    border:2px solid transparent; margin-bottom:6px;}
-  .row .dot{width:14px; height:14px; border-radius:50%; flex:0 0 auto; background:var(--dim);}
+  /* --- one focus model: `.foc` is the ONLY highlight --- */
+  .row{display:flex; align-items:center; gap:16px; padding:12px 18px; border-radius:12px;
+    border:3px solid transparent; margin-bottom:4px;}
+  .row .dot{width:16px; height:16px; border-radius:50%; flex:0 0 auto; background:var(--dim);}
   .row.ok .dot{background:var(--ok);} .row.fail .dot{background:var(--bad);}
   .row.warn .dot{background:var(--warn);}
-  .row .name{font-size:21px; flex:1;}
-  .row .count{font-size:17px; color:var(--dim);}
+  .row .name{flex:1; font-size:22px;}
+  .row .count{font-size:18px; color:var(--dim);}
   .row.fail .count{color:var(--bad); font-weight:700;}
-  .row.sel{border-color:var(--focus); background:var(--panel2);}
-  .detail{font:16px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap;
-    color:#b9cadb; padding:10px 16px 16px 46px;}
-  .detail .ok{color:var(--ok);} .detail .fail{color:var(--bad); font-weight:700;}
-  .detail .warn{color:var(--warn);} .detail .na{color:var(--dim);}
+  .row.foc{border-color:var(--focus); background:var(--focusbg);}
+  .row.foc .name{font-weight:700;}
 
   .btns{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
-  button{font:600 21px/1 inherit; color:var(--fg); background:var(--panel2);
-    border:2px solid var(--line); border-radius:12px; padding:20px 16px; cursor:pointer;}
-  button.sel{border-color:var(--focus); background:#16283c;}
+  button{font:600 22px/1 inherit; color:var(--fg); background:var(--panel2);
+    border:3px solid transparent; border-radius:12px; padding:22px 16px; cursor:pointer;}
   button.wide{grid-column:1/-1;}
-  button.danger{color:#ffd9d9; border-color:#5c1f1f;}
-  button.danger.sel{border-color:var(--bad); background:#2a1414;}
+  button.danger{color:#ffd9d9; background:#1c1113;}
+  button.foc{border-color:var(--focus); background:var(--focusbg); color:#fff; font-weight:700;}
 
-  #log{margin-top:20px; height:calc(100% - 210px); overflow:auto; background:#05090d;
-    border:2px solid var(--line); border-radius:12px; padding:14px;
-    font:15px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; color:#aebccb;}
-  .hint{color:var(--dim); font-size:17px; margin-bottom:14px;}
+  #foot{font:16px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap;
+    color:#b9cadb; height:calc(100% - 34px); overflow:auto;}
+  #foot .ok{color:var(--ok);} #foot .fail{color:var(--bad); font-weight:700;}
+  #foot .warn{color:var(--warn);} #foot .na{color:var(--dim);}
+  .hint{color:var(--dim); font-size:19px; margin-bottom:16px;}
 </style>
 </head>
 <body>
 <header>
   <h1>own-your-glass</h1>
-  <span class="sub">on-device control &mdash; works with no network</span>
+  <span class="sub">works with no network</span>
   <span id="health">loading</span>
 </header>
 
-<main>
-  <div class="pane left">
+<div class="body">
+  <div class="pane mods">
     <h2>Modules</h2>
-    <div id="mods"><div class="hint">loading&hellip;</div></div>
+    <div id="mods"></div>
+    <div style="height:14px"></div>
   </div>
-  <div class="pane right">
+  <div class="pane acts">
     <h2>Actions</h2>
-    <div class="hint">Remote: &#9650;&#9660; move &nbsp;&middot;&nbsp; OK select &nbsp;&middot;&nbsp; colour keys = shortcuts</div>
+    <div class="hint">&#9650;&#9660;&#9664;&#9654; move &nbsp;&middot;&nbsp; OK select</div>
     <div class="btns">
       <button data-act="check"   data-short="blue">Check</button>
       <button data-act="harden"  data-short="green">Harden all</button>
@@ -80,123 +82,165 @@
       <button data-act="restore-net" class="danger wide" data-short="red">RESTORE NETWORK</button>
       <button data-act="reboot" class="danger wide">Reboot TV</button>
     </div>
-    <h2 style="margin-top:22px">Log</h2>
-    <pre id="log">ready.</pre>
   </div>
-</main>
+  <div class="pane foot">
+    <h2 id="footTitle">Detail</h2>
+    <pre id="foot">loading&hellip;</pre>
+  </div>
+</div>
 
 <script>
 var SVC  = "luna://org.webosbrew.hbchannel.service";
 var ROOT = "/var/lib/own-your-glass";
 var ALOG = "/tmp/oyg-app.log";
 
-// ---- luna, done properly ---------------------------------------------------
-// PalmServiceBridge objects MUST be kept referenced until their callback
-// fires: if the only reference is a local var the GC can collect it and the
-// callback never runs — which is what left the panel on "loading…" forever.
+/* ---------------- luna: hold bridge refs, serialise calls ---------------- */
 var live = [];
 function ls2(uri, method, params, cb) {
-  var done = function (err, res) {
-    var i = live.indexOf(b);
-    if (i >= 0) live.splice(i, 1);
-    cb(err, res);
-  };
   if (window.webOS && webOS.service && webOS.service.request) {
-    var b0 = null;
-    webOS.service.request(uri, {
-      method: method, parameters: params || {},
+    webOS.service.request(uri, { method: method, parameters: params || {},
       onSuccess: function (r) { cb(null, r || {}); },
-      onFailure: function (e) { cb((e && e.errorText) || "luna failure", null); }
-    });
+      onFailure: function (e) { cb((e && e.errorText) || "luna failure", null); } });
     return;
   }
   if (!window.PalmServiceBridge) { cb("no luna bridge available", null); return; }
   var b = new PalmServiceBridge();
-  live.push(b);
+  live.push(b);                       /* must outlive the call */
   b.onservicecallback = function (msg) {
-    var o;
-    try { o = JSON.parse(msg); } catch (e) { o = { errorText: String(msg) }; }
-    if (o && o.returnValue === false && o.errorText) done(o.errorText, null);
-    else done(null, o || {});
+    var i = live.indexOf(b); if (i >= 0) live.splice(i, 1);
+    var o; try { o = JSON.parse(msg); } catch (e) { o = { errorText: String(msg) }; }
+    if (o && o.returnValue === false && o.errorText) cb(o.errorText, null);
+    else cb(null, o || {});
   };
   try { b.call(uri + "/" + method, JSON.stringify(params || {})); }
-  catch (e) { done("bridge call failed: " + e, null); }
+  catch (e) { cb("bridge call failed: " + e, null); }
 }
 function exec(command, cb) { ls2(SVC, "exec", { command: command }, cb); }
 function out(r) { return (r && r.stdoutString) || ""; }
 
-// serialise shell commands: one at a time, so nothing overlaps or races
 var chain = Promise.resolve();
 function sh(command, cb) {
   chain = chain.then(function () {
     return new Promise(function (res) { exec(command, function (e, r) { cb(e, r); res(); }); });
   });
-  return chain;
 }
 
-// ---- status ----------------------------------------------------------------
-var GROUPS = { SYSTEM:"System", NETWORK:"Network blocking", DNS:"DNS sinkhole",
-  MICS:"Microphones", VOICE:"Voice", DEBLOAT:"Debloat", APPS:"Hidden apps",
-  POLICY:"Consents / policy" };
-var order = [], data = {}, sel = 0;
-
+/* ------------------------------- status -------------------------------- */
+var order = [], data = {};
 function parseFast(text) {
   order = []; data = {};
   text.split("\n").forEach(function (l) {
-    var p = l.split("|");
-    if (p.length < 3) return;
+    var p = l.split("|"); if (p.length < 3) return;
     var g = p[0], lvl = p[1], txt = p.slice(2).join("|");
     if (lvl === "HEADER") { data[g] = { title: txt, lines: [] }; order.push(g); return; }
-    if (!data[g]) { data[g] = { title: GROUPS[g] || g, lines: [] }; order.push(g); }
+    if (!data[g]) { data[g] = { title: g, lines: [] }; order.push(g); }
     data[g].lines.push({ level: lvl, text: txt });
   });
 }
-
 function levelOf(g) {
-  var ls = data[g].lines;
-  if (ls.some(function (x) { return x.level === "FAIL"; })) return "fail";
-  if (ls.some(function (x) { return x.level === "WARN"; })) return "warn";
+  var l = data[g].lines;
+  if (l.some(function (x) { return x.level === "FAIL"; })) return "fail";
+  if (l.some(function (x) { return x.level === "WARN"; })) return "warn";
   return "ok";
 }
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+
+var navItems = [];      /* focusable elements, in DOM order */
+var navIdx = 0;
+var pinned = -1;        /* module index whose detail is shown */
 
 function render() {
   var mods = document.getElementById("mods");
   var ok = 0, bad = 0;
-  order.forEach(function (g) {
-    var lv = levelOf(g);
-    if (lv === "fail") bad++; else ok++;
-  });
-  document.getElementById("health").textContent = order.length + " modules · " + ok + " OK · " + bad + " FAIL";
-  document.getElementById("health").className = bad ? "bad" : "good";
+  order.forEach(function (g) { levelOf(g) === "fail" ? bad++ : ok++; });
+  var h = document.getElementById("health");
+  h.textContent = order.length + " modules · " + ok + " OK · " + bad + " FAIL";
+  h.className = bad ? "bad" : "good";
 
   mods.innerHTML = order.map(function (g, i) {
     var lv = levelOf(g);
     var fails = data[g].lines.filter(function (x) { return x.level === "FAIL"; }).length;
-    var badge = (lv === "fail") ? (fails + " FAIL") : (data[g].lines.length + " OK");
-    var det = (i === sel) ? '<div class="detail">' + data[g].lines.map(function (x) {
+    return '<div class="row ' + lv + '" data-kind="mod" data-i="' + i + '">' +
+      '<span class="dot"></span><span class="name">' + esc(data[g].title) + '</span>' +
+      '<span class="count">' + (fails ? fails + " FAIL" : data[g].lines.length + " OK") + '</span></div>';
+  }).join("");
+
+  buildNav();
+  if (pinned >= 0 && pinned < order.length) showModule(pinned);
+  else showFocusedDetail();
+}
+
+function buildNav() {
+  navItems = [].slice.call(document.querySelectorAll('[data-kind="mod"]'))
+    .concat([].slice.call(document.querySelectorAll('button[data-act]')));
+  if (navIdx >= navItems.length) navIdx = 0;
+  paint();
+}
+
+function paint() {
+  navItems.forEach(function (el, i) { el.classList.toggle("foc", i === navIdx); });
+  var el = navItems[navIdx];
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+}
+
+/* Spatial navigation: the highlight moves where you press. */
+function move(dir) {
+  if (!navItems.length) return;
+  var cur = navItems[navIdx].getBoundingClientRect();
+  var cx = cur.left + cur.width / 2, cy = cur.top + cur.height / 2;
+  var best = -1, bestScore = Infinity;
+  navItems.forEach(function (el, i) {
+    if (i === navIdx) return;
+    var r = el.getBoundingClientRect();
+    var dx = (r.left + r.width / 2) - cx, dy = (r.top + r.height / 2) - cy;
+    var primary, secondary;
+    if (dir === "up")    { if (dy > -4) return; primary = -dy; secondary = Math.abs(dx); }
+    else if (dir === "down")  { if (dy <  4) return; primary =  dy; secondary = Math.abs(dx); }
+    else if (dir === "left")  { if (dx > -4) return; primary = -dx; secondary = Math.abs(dy); }
+    else                      { if (dx <  4) return; primary =  dx; secondary = Math.abs(dy); }
+    var score = primary + secondary * 2.2;
+    if (score < bestScore) { bestScore = score; best = i; }
+  });
+  if (best >= 0) { navIdx = best; pinned = -1; paint(); showFocusedDetail(); }
+}
+
+function showFocusedDetail() {
+  var el = navItems[navIdx];
+  if (!el) return;
+  if (el.getAttribute("data-kind") === "mod") {
+    showModule(parseInt(el.getAttribute("data-i"), 10));
+  } else {
+    var act = el.getAttribute("data-act");
+    setFoot("Action — " + act, "Press OK to run:  " + ACTIONS[act]);
+  }
+}
+
+function showModule(i) {
+  var g = order[i]; if (!g) return;
+  document.getElementById("footTitle").textContent = "Detail — " + data[g].title;
+  document.getElementById("foot").innerHTML =
+    data[g].lines.map(function (x) {
       var cls = x.level === "FAIL" ? "fail" : x.level === "WARN" ? "warn"
               : x.level === "NA" ? "na" : "ok";
       return '<span class="' + cls + '">' + esc(x.level + "  " + x.text) + "</span>";
-    }).join("\n") + "</div>" : "";
-    return '<div class="row ' + lv + (i === sel ? " sel" : "") + '" data-i="' + i + '">' +
-             '<span class="dot"></span><span class="name">' + esc(data[g].title) + "</span>" +
-             '<span class="count">' + badge + "</span></div>" + det;
-  }).join("");
+    }).join("\n");
 }
-function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
 
-function loadStatus(msg) {
-  if (msg) log(msg);
+function setFoot(title, text) {
+  document.getElementById("footTitle").textContent = title;
+  var el = document.getElementById("foot");
+  el.textContent = text; el.scrollTop = 0;
+}
+
+function loadStatus() {
   sh("sh " + ROOT + "/scripts/status-fast.sh 2>&1", function (e, r) {
-    if (e) { log("[status-fast error] " + e); return; }
+    if (e) { setFoot("Error", e); return; }
     parseFast(out(r));
-    if (sel >= order.length) sel = 0;
     render();
   });
-  sh("sh " + ROOT + "/scripts/dns.sh status 2>&1", function () { /* kept for the log */ });
 }
 
-// ---- actions ---------------------------------------------------------------
+/* ------------------------------- actions ------------------------------- */
 var ACTIONS = {
   "check":       ROOT + "/scripts/status-fast.sh",
   "harden":      ROOT + "/oyg harden",
@@ -207,64 +251,60 @@ var ACTIONS = {
 };
 var busy = false, poller = null;
 function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
-function log(t) { var el = document.getElementById("log"); el.textContent = t; el.scrollTop = el.scrollHeight; }
 
 function run(act) {
   if (busy || !ACTIONS[act]) return;
   busy = true;
   document.getElementById("health").className = "busy";
   document.getElementById("health").textContent = "running " + act + "…";
-  log("$ " + ACTIONS[act] + "\n");
+  setFoot("Running — " + act, "$ " + ACTIONS[act] + "\n");
   exec(": > " + ALOG + "; nohup sh -c " + sq(ACTIONS[act]) + " >> " + ALOG + " 2>&1 &", function () {
     if (poller) clearInterval(poller);
-    poller = setInterval(function () { follow(); }, 1500);
+    poller = setInterval(follow, 1500);
     setTimeout(function () {
-      clearInterval(poller); poller = null; busy = false;
-      loadStatus();
+      clearInterval(poller); poller = null; busy = false; loadStatus();
     }, 12000);
   });
 }
 function follow() {
-  exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) { if (!e) log(out(r) || "(empty)"); });
+  exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) {
+    if (e) return;
+    document.getElementById("footTitle").textContent = "Log";
+    var el = document.getElementById("foot");
+    el.textContent = out(r) || "(no output yet)";
+    el.scrollTop = el.scrollHeight;
+  });
 }
 
-// ---- remote control --------------------------------------------------------
-var focusables = [];
-function refreshFocusables() {
-  focusables = [].slice.call(document.querySelectorAll("button[data-act]"));
-}
-function paintFocus() {
-  focusables.forEach(function (b, i) { b.classList.toggle("sel", i === focusIdx); });
-  if (focusables[focusIdx]) focusables[focusIdx].scrollIntoView({ block: "nearest" });
-}
-var focusIdx = 0;
-
-function move(d) {
-  if (!focusables.length) return;
-  focusIdx = (focusIdx + d + focusables.length) % focusables.length;
-  paintFocus();
-}
-function selectModule(d) {
-  if (!order.length) return;
-  sel = (sel + d + order.length) % order.length;
-  render();
-}
-
+/* ------------------------------- remote -------------------------------- */
 document.addEventListener("keydown", function (ev) {
-  var k = ev.keyCode;
-  if (k === 38) { move(-1); ev.preventDefault(); }          // up
-  else if (k === 40) { move(1); ev.preventDefault(); }       // down
-  else if (k === 37) { selectModule(-1); ev.preventDefault(); } // left  -> modules
-  else if (k === 39) { selectModule(1); ev.preventDefault(); }  // right -> modules
-  else if (k === 13) { if (focusables[focusIdx]) run(focusables[focusIdx].getAttribute("data-act")); ev.preventDefault(); }
-  else if (k === 403 || k === 405) { run("restore-net"); ev.preventDefault(); } // red / yellow
-  else if (k === 404) { run("harden"); ev.preventDefault(); }                    // green
-  else if (k === 406) { run("check"); ev.preventDefault(); }                     // blue
+  var k = ev.keyCode, handled = true;
+  if (k === 38) move("up");
+  else if (k === 40) move("down");
+  else if (k === 37) move("left");
+  else if (k === 39) move("right");
+  else if (k === 13) {
+    var el = navItems[navIdx];
+    if (el && el.getAttribute("data-act")) run(el.getAttribute("data-act"));
+    else if (el) { pinned = parseInt(el.getAttribute("data-i"), 10); showModule(pinned); }
+  }
+  else if (k === 403 || k === 405) run("restore-net");   /* red / yellow */
+  else if (k === 404) run("harden");                     /* green */
+  else if (k === 406) run("check");                      /* blue  */
+  else handled = false;
+  if (handled) ev.preventDefault();
 });
 
-refreshFocusables();
-paintFocus();
-loadStatus("starting…");
+document.addEventListener("click", function (ev) {
+  var el = ev.target.closest && ev.target.closest('[data-kind="mod"],button[data-act]');
+  if (!el) return;
+  var i = navItems.indexOf(el);
+  if (i >= 0) { navIdx = i; paint(); }
+  if (el.getAttribute("data-act")) run(el.getAttribute("data-act"));
+  else { pinned = parseInt(el.getAttribute("data-i"), 10); showModule(pinned); }
+});
+
+loadStatus();
 setInterval(function () { if (!busy) loadStatus(); }, 20000);
 </script>
 </body>
