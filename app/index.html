@@ -6,95 +6,132 @@
 <title>own-your-glass</title>
 <style>
   :root{
-    --bg:#070b10; --panel:#0d141c; --panel2:#111a24; --line:#1e2a38;
-    --fg:#e8eef5; --dim:#7d8fa3; --ok:#3ddc84; --bad:#ff5c5c; --warn:#ffb020;
-    --focus:#ffffff; --focusbg:#1d4ed8;
+    --bg:#080c12; --card:#111823; --card2:#151e2b; --line:#22303f;
+    --fg:#e8eef6; --muted:#8698ac; --muted2:#5f7186;
+    --accent:#4cc2ff; --accent-ink:#04202f;
+    --ok:#34d97f; --warn:#ffb020; --bad:#ff5f5f;
+    --r:16px;
   }
-  *{box-sizing:border-box; margin:0; padding:0;}
-  html,body{height:100%; background:var(--bg); color:var(--fg); overflow:hidden;
-    font:24px/1.35 "Helvetica Neue",Helvetica,Arial,sans-serif; -webkit-user-select:none;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+    font:400 21px/1.4 "Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-user-select:none}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(1200px 600px at 20% -10%,#12233a 0%,transparent 60%),
+               radial-gradient(900px 500px at 100% 0%,#1a1630 0%,transparent 55%)}
 
-  header{display:flex; align-items:center; gap:24px; padding:20px 40px;
-    border-bottom:2px solid var(--line); background:var(--panel);}
-  header h1{font-size:34px; font-weight:700;}
-  header .sub{color:var(--dim); font-size:18px;}
-  #health{margin-left:auto; font-size:20px; font-weight:700; padding:8px 20px;
-    border-radius:24px; border:2px solid var(--line);}
-  #health.good{color:var(--ok); border-color:var(--ok);}
-  #health.bad{color:var(--bad); border-color:var(--bad);}
-  #health.busy{color:var(--warn); border-color:var(--warn);}
+  .wrap{position:relative;height:100%;display:flex;flex-direction:column}
 
-  .body{display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 300px;
-    height:calc(100% - 84px);}
-  .pane{padding:18px 40px; overflow:hidden;}
-  .pane.mods{border-right:2px solid var(--line);}
-  .pane.foot{grid-column:1 / -1; border-top:2px solid var(--line); background:#05090d;}
-  h2{font-size:14px; letter-spacing:2.5px; text-transform:uppercase; color:var(--dim);
-    margin-bottom:14px; font-weight:700;}
+  /* ---------- header ---------- */
+  header{display:flex;align-items:center;gap:18px;padding:26px 44px 20px}
+  .logo{width:38px;height:38px;border-radius:11px;flex:0 0 auto;
+    background:linear-gradient(145deg,var(--accent),#2b7fb8);
+    box-shadow:0 6px 22px rgba(76,194,255,.28)}
+  .brand{display:flex;flex-direction:column}
+  .brand b{font-size:27px;font-weight:600;letter-spacing:.2px}
+  .brand span{font-size:15px;color:var(--muted2);letter-spacing:.3px}
+  .health{margin-left:auto;display:flex;align-items:center;gap:14px;
+    padding:12px 22px;border:1px solid var(--line);border-radius:999px;
+    background:rgba(17,24,35,.72)}
+  .health .n{font-size:26px;font-weight:600}
+  .health .l{font-size:14px;color:var(--muted2);letter-spacing:1.4px;text-transform:uppercase}
+  .health .pill{font-size:16px;font-weight:600;padding:5px 13px;border-radius:999px}
+  .health.good .pill{color:#062;background:var(--ok)}
+  .health.bad .pill{color:#300;background:var(--bad)}
+  .health.busy .pill{color:#320;background:var(--warn)}
 
-  /* --- one focus model: `.foc` is the ONLY highlight --- */
-  .row{display:flex; align-items:center; gap:16px; padding:12px 18px; border-radius:12px;
-    border:3px solid transparent; margin-bottom:4px;}
-  .row .dot{width:16px; height:16px; border-radius:50%; flex:0 0 auto; background:var(--dim);}
-  .row.ok .dot{background:var(--ok);} .row.fail .dot{background:var(--bad);}
-  .row.warn .dot{background:var(--warn);}
-  .row .name{flex:1; font-size:22px;}
-  .row .count{font-size:18px; color:var(--dim);}
-  .row.fail .count{color:var(--bad); font-weight:700;}
-  .row.foc{border-color:var(--focus); background:var(--focusbg);}
-  .row.foc .name{font-weight:700;}
+  /* ---------- body ---------- */
+  .body{flex:1;display:grid;grid-template-columns:1.08fr 1fr;grid-template-rows:1fr 232px;
+    gap:22px;padding:0 44px 30px;min-height:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:20px 22px;min-height:0;display:flex;flex-direction:column}
+  .card h2{font-size:13px;letter-spacing:2.4px;text-transform:uppercase;color:var(--muted2);
+    font-weight:600;margin-bottom:14px}
 
-  .btns{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
-  button{font:600 22px/1 inherit; color:var(--fg); background:var(--panel2);
-    border:3px solid transparent; border-radius:12px; padding:22px 16px; cursor:pointer;}
-  button.wide{grid-column:1/-1;}
-  button.danger{color:#ffd9d9; background:#1c1113;}
-  button.foc{border-color:var(--focus); background:var(--focusbg); color:#fff; font-weight:700;}
+  .list{overflow:auto;min-height:0}
+  .row{display:flex;align-items:center;gap:15px;padding:13px 16px;border-radius:12px;
+    border:2px solid transparent;margin-bottom:5px}
+  .dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;background:var(--muted2)}
+  .row.ok .dot{background:var(--ok);box-shadow:0 0 12px rgba(52,217,127,.5)}
+  .row.warn .dot{background:var(--warn)}
+  .row.fail .dot{background:var(--bad);box-shadow:0 0 12px rgba(255,95,95,.55)}
+  .row .name{flex:1;font-size:21px}
+  .row .cnt{font-size:16px;color:var(--muted2)}
+  .row.fail .cnt{color:var(--bad);font-weight:600}
+  .row.foc{border-color:var(--accent);background:var(--card2);
+    box-shadow:0 0 0 4px rgba(76,194,255,.13)}
 
-  #foot{font:16px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap;
-    color:#b9cadb; height:calc(100% - 34px); overflow:auto;}
-  #foot .ok{color:var(--ok);} #foot .fail{color:var(--bad); font-weight:700;}
-  #foot .warn{color:var(--warn);} #foot .na{color:var(--dim);}
-  .hint{color:var(--dim); font-size:19px; margin-bottom:16px;}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  button{font:600 20px/1 inherit;color:var(--fg);background:var(--card2);
+    border:2px solid var(--line);border-radius:13px;padding:19px 16px;cursor:pointer;
+    transition:transform .08s}
+  button.wide{grid-column:1/-1}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);
+    font-size:22px;padding:22px 16px}
+  button.danger{color:#ffd6d6;background:#1b1013;border-color:#4a1f24}
+  button.foc{border-color:var(--accent);background:var(--card2);
+    box-shadow:0 0 0 4px rgba(76,194,255,.16);transform:scale(1.015)}
+  button.primary.foc{background:#7ad4ff;border-color:#7ad4ff;
+    box-shadow:0 0 0 5px rgba(76,194,255,.22)}
+  button.danger.foc{border-color:var(--bad);background:#2a1418;
+    box-shadow:0 0 0 4px rgba(255,95,95,.16)}
+  .sep{display:flex;align-items:center;gap:12px;color:var(--muted2);font-size:13px;
+    letter-spacing:2px;text-transform:uppercase;margin:18px 0 12px}
+  .sep::after{content:"";flex:1;height:1px;background:var(--line)}
+
+  /* ---------- footer ---------- */
+  .foot{grid-column:1/-1}
+  #foot{font:16px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;
+    color:#b8c9db;overflow:auto;min-height:0}
+  #foot .ok{color:var(--ok)} #foot .fail{color:var(--bad);font-weight:600}
+  #foot .warn{color:var(--warn)} #foot .na{color:var(--muted2)}
+  .hint{color:var(--muted2);font-size:15px;margin-top:auto;padding-top:12px}
 </style>
 </head>
 <body>
-<header>
-  <h1>own-your-glass</h1>
-  <span class="sub">works with no network</span>
-  <span id="health">loading</span>
-</header>
+<div class="wrap">
+  <header>
+    <div class="logo"></div>
+    <div class="brand"><b>own-your-glass</b><span>on-device hardening · works with no network</span></div>
+    <div class="health" id="health"><span class="l" id="hlabel">loading</span><span class="pill" id="hpill">…</span></div>
+  </header>
 
-<div class="body">
-  <div class="pane mods">
-    <h2>Modules</h2>
-    <div id="mods"></div>
-    <div style="height:14px"></div>
-  </div>
-  <div class="pane acts">
-    <h2>Actions</h2>
-    <div class="hint">&#9650;&#9660;&#9664;&#9654; move &nbsp;&middot;&nbsp; OK select</div>
-    <div class="btns">
-      <button data-act="check"   data-short="blue">Check</button>
-      <button data-act="harden"  data-short="green">Harden all</button>
-      <button data-act="dns-on">DNS sink ON</button>
-      <button data-act="dns-off">DNS sink OFF</button>
-      <button data-act="restore-net" class="danger wide" data-short="red">RESTORE NETWORK</button>
-      <button data-act="reboot" class="danger wide">Reboot TV</button>
-    </div>
-  </div>
-  <div class="pane foot">
-    <h2 id="footTitle">Detail</h2>
-    <pre id="foot">loading&hellip;</pre>
+  <div class="body">
+    <section class="card">
+      <h2>Modules</h2>
+      <div class="list" id="mods"></div>
+      <div class="hint">&#9650;&#9660;&#9664;&#9654; move &nbsp;·&nbsp; OK open</div>
+    </section>
+
+    <section class="card">
+      <h2>Hardening</h2>
+      <div class="btns">
+        <button class="primary wide" data-act="apply" data-short="green">APPLY</button>
+        <button data-act="check" data-short="blue">Check</button>
+        <button class="danger" data-act="revert-all">Revert all</button>
+      </div>
+      <div class="sep">Tools</div>
+      <div class="btns">
+        <button data-act="dns-on">DNS sink on</button>
+        <button data-act="dns-off">DNS sink off</button>
+        <button class="danger wide" data-act="restore-net" data-short="red">Restore network</button>
+      </div>
+      <div class="hint">Green = APPLY &nbsp;·&nbsp; Blue = Check &nbsp;·&nbsp; Red = Restore network</div>
+    </section>
+
+    <section class="card foot">
+      <h2 id="footTitle">Detail</h2>
+      <pre id="foot">loading…</pre>
+    </section>
   </div>
 </div>
 
 <script>
-var SVC  = "luna://org.webosbrew.hbchannel.service";
-var ROOT = "/var/lib/own-your-glass";
-var ALOG = "/tmp/oyg-app.log";
+var SVC    = "luna://org.webosbrew.hbchannel.service";
+var APPID  = "org.ownyourglass.control";
+var ROOT   = "/var/lib/own-your-glass";
+var ALOG   = "/tmp/oyg-app.log";
 
-/* ---------------- luna: hold bridge refs, serialise calls ---------------- */
+/* ---------- luna (bridge refs held; calls serialised) ---------- */
 var live = [];
 function ls2(uri, method, params, cb) {
   if (window.webOS && webOS.service && webOS.service.request) {
@@ -103,71 +140,80 @@ function ls2(uri, method, params, cb) {
       onFailure: function (e) { cb((e && e.errorText) || "luna failure", null); } });
     return;
   }
-  if (!window.PalmServiceBridge) { cb("no luna bridge available", null); return; }
-  var b = new PalmServiceBridge();
-  live.push(b);                       /* must outlive the call */
+  if (!window.PalmServiceBridge) { cb("no luna bridge", null); return; }
+  var b = new PalmServiceBridge(); live.push(b);
   b.onservicecallback = function (msg) {
     var i = live.indexOf(b); if (i >= 0) live.splice(i, 1);
     var o; try { o = JSON.parse(msg); } catch (e) { o = { errorText: String(msg) }; }
-    if (o && o.returnValue === false && o.errorText) cb(o.errorText, null);
-    else cb(null, o || {});
+    if (o && o.returnValue === false && o.errorText) cb(o.errorText, null); else cb(null, o || {});
   };
-  try { b.call(uri + "/" + method, JSON.stringify(params || {})); }
-  catch (e) { cb("bridge call failed: " + e, null); }
+  try { b.call(uri + "/" + method, JSON.stringify(params || {})); } catch (e) { cb(String(e), null); }
 }
-function exec(command, cb) { ls2(SVC, "exec", { command: command }, cb); }
+function exec(cmd, cb) { ls2(SVC, "exec", { command: cmd }, cb); }
 function out(r) { return (r && r.stdoutString) || ""; }
-
 var chain = Promise.resolve();
-function sh(command, cb) {
+function sh(cmd, cb) {
   chain = chain.then(function () {
-    return new Promise(function (res) { exec(command, function (e, r) { cb(e, r); res(); }); });
+    return new Promise(function (res) { exec(cmd, function (e, r) { cb(e, r); res(); }); });
+  });
+  return chain;
+}
+
+/* ---------- locate our bundled toolkit ---------- */
+var APPDIR = null;      /* resolved once, e.g. /media/developer/apps/usr/palm/applications/<id> */
+function findApp() {
+  return new Promise(function (res) {
+    if (APPDIR) { res(APPDIR); return; }
+    sh("for d in /media/developer/apps/usr/palm/applications/" + APPID +
+       " /usr/palm/applications/" + APPID + "; do [ -d \"$d/toolkit\" ] && { echo $d; break; }; done 2>/dev/null",
+      function (e, r) {
+        var p = (out(r) || "").trim().split("\n")[0];
+        APPDIR = p || "/var/lib/own-your-glass";
+        res(APPDIR);
+      });
   });
 }
 
-/* ------------------------------- status -------------------------------- */
-var order = [], data = {};
-function parseFast(text) {
-  order = []; data = {};
-  text.split("\n").forEach(function (l) {
+/* ---------- status ---------- */
+var order = [], data = [];
+function parseFast(t) {
+  order = []; data = [];
+  t.split("\n").forEach(function (l) {
     var p = l.split("|"); if (p.length < 3) return;
     var g = p[0], lvl = p[1], txt = p.slice(2).join("|");
-    if (lvl === "HEADER") { data[g] = { title: txt, lines: [] }; order.push(g); return; }
-    if (!data[g]) { data[g] = { title: g, lines: [] }; order.push(g); }
-    data[g].lines.push({ level: lvl, text: txt });
+    if (lvl === "HEADER") { data.push({ id: g, title: txt, lines: [] }); order.push(g); return; }
+    var i = order.indexOf(g);
+    if (i < 0) { order.push(g); data.push({ id: g, title: g, lines: [] }); i = data.length - 1; }
+    data[i].lines.push({ level: lvl, text: txt });
   });
 }
-function levelOf(g) {
-  var l = data[g].lines;
-  if (l.some(function (x) { return x.level === "FAIL"; })) return "fail";
-  if (l.some(function (x) { return x.level === "WARN"; })) return "warn";
+function levelOf(m) {
+  if (m.lines.some(function (x) { return x.level === "FAIL"; })) return "fail";
+  if (m.lines.some(function (x) { return x.level === "WARN"; })) return "warn";
   return "ok";
 }
-function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
 
-var navItems = [];      /* focusable elements, in DOM order */
-var navIdx = 0;
-var pinned = -1;        /* module index whose detail is shown */
+var navItems = [], navIdx = 0, pinned = null;
 
 function render() {
-  var mods = document.getElementById("mods");
   var ok = 0, bad = 0;
-  order.forEach(function (g) { levelOf(g) === "fail" ? bad++ : ok++; });
+  data.forEach(function (m) { levelOf(m) === "fail" ? bad++ : ok++; });
   var h = document.getElementById("health");
-  h.textContent = order.length + " modules · " + ok + " OK · " + bad + " FAIL";
-  h.className = bad ? "bad" : "good";
+  document.getElementById("hlabel").textContent = "modules";
+  document.getElementById("hpill").textContent = ok + " OK · " + bad + " FAIL";
+  h.className = "health " + (bad ? "bad" : "good");
 
-  mods.innerHTML = order.map(function (g, i) {
-    var lv = levelOf(g);
-    var fails = data[g].lines.filter(function (x) { return x.level === "FAIL"; }).length;
+  document.getElementById("mods").innerHTML = data.map(function (m, i) {
+    var lv = levelOf(m);
+    var f = m.lines.filter(function (x) { return x.level === "FAIL"; }).length;
     return '<div class="row ' + lv + '" data-kind="mod" data-i="' + i + '">' +
-      '<span class="dot"></span><span class="name">' + esc(data[g].title) + '</span>' +
-      '<span class="count">' + (fails ? fails + " FAIL" : data[g].lines.length + " OK") + '</span></div>';
+      '<span class="dot"></span><span class="name">' + esc(m.title) + '</span>' +
+      '<span class="cnt">' + (f ? f + " FAIL" : m.lines.length + " OK") + '</span></div>';
   }).join("");
 
   buildNav();
-  if (pinned >= 0 && pinned < order.length) showModule(pinned);
-  else showFocusedDetail();
+  if (pinned !== null) showModule(pinned); else showFocused();
 }
 
 function buildNav() {
@@ -176,109 +222,114 @@ function buildNav() {
   if (navIdx >= navItems.length) navIdx = 0;
   paint();
 }
-
 function paint() {
   navItems.forEach(function (el, i) { el.classList.toggle("foc", i === navIdx); });
-  var el = navItems[navIdx];
-  if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  if (navItems[navIdx]) navItems[navIdx].scrollIntoView({ block: "nearest" });
 }
-
-/* Spatial navigation: the highlight moves where you press. */
 function move(dir) {
   if (!navItems.length) return;
-  var cur = navItems[navIdx].getBoundingClientRect();
-  var cx = cur.left + cur.width / 2, cy = cur.top + cur.height / 2;
-  var best = -1, bestScore = Infinity;
+  var c = navItems[navIdx].getBoundingClientRect();
+  var cx = c.left + c.width / 2, cy = c.top + c.height / 2;
+  var best = -1, bs = Infinity;
   navItems.forEach(function (el, i) {
     if (i === navIdx) return;
     var r = el.getBoundingClientRect();
     var dx = (r.left + r.width / 2) - cx, dy = (r.top + r.height / 2) - cy;
-    var primary, secondary;
-    if (dir === "up")    { if (dy > -4) return; primary = -dy; secondary = Math.abs(dx); }
-    else if (dir === "down")  { if (dy <  4) return; primary =  dy; secondary = Math.abs(dx); }
-    else if (dir === "left")  { if (dx > -4) return; primary = -dx; secondary = Math.abs(dy); }
-    else                      { if (dx <  4) return; primary =  dx; secondary = Math.abs(dy); }
-    var score = primary + secondary * 2.2;
-    if (score < bestScore) { bestScore = score; best = i; }
+    var a, b;
+    if (dir === "up") { if (dy > -4) return; a = -dy; b = Math.abs(dx); }
+    else if (dir === "down") { if (dy < 4) return; a = dy; b = Math.abs(dx); }
+    else if (dir === "left") { if (dx > -4) return; a = -dx; b = Math.abs(dy); }
+    else { if (dx < 4) return; a = dx; b = Math.abs(dy); }
+    var s = a + b * 2.2;
+    if (s < bs) { bs = s; best = i; }
   });
-  if (best >= 0) { navIdx = best; pinned = -1; paint(); showFocusedDetail(); }
+  if (best >= 0) navIdx = best;
+  pinned = null; paint(); showFocused();
 }
-
-function showFocusedDetail() {
-  var el = navItems[navIdx];
-  if (!el) return;
-  if (el.getAttribute("data-kind") === "mod") {
-    showModule(parseInt(el.getAttribute("data-i"), 10));
-  } else {
-    var act = el.getAttribute("data-act");
-    setFoot("Action — " + act, "Press OK to run:  " + ACTIONS[act]);
-  }
+function showFocused() {
+  var el = navItems[navIdx]; if (!el) return;
+  if (el.getAttribute("data-kind") === "mod") showModule(parseInt(el.getAttribute("data-i"), 10));
+  else setFoot(labelOf(el.getAttribute("data-act")), "Press OK to run.");
 }
-
 function showModule(i) {
-  var g = order[i]; if (!g) return;
-  document.getElementById("footTitle").textContent = "Detail — " + data[g].title;
-  document.getElementById("foot").innerHTML =
-    data[g].lines.map(function (x) {
-      var cls = x.level === "FAIL" ? "fail" : x.level === "WARN" ? "warn"
-              : x.level === "NA" ? "na" : "ok";
-      return '<span class="' + cls + '">' + esc(x.level + "  " + x.text) + "</span>";
-    }).join("\n");
+  var m = data[i]; if (!m) return;
+  document.getElementById("footTitle").textContent = m.title;
+  document.getElementById("foot").innerHTML = m.lines.map(function (x) {
+    var c = x.level === "FAIL" ? "fail" : x.level === "WARN" ? "warn" : x.level === "NA" ? "na" : "ok";
+    return '<span class="' + c + '">' + esc(x.level + "  " + x.text) + "</span>";
+  }).join("\n");
 }
-
-function setFoot(title, text) {
-  document.getElementById("footTitle").textContent = title;
-  var el = document.getElementById("foot");
-  el.textContent = text; el.scrollTop = 0;
+function setFoot(t, txt) {
+  document.getElementById("footTitle").textContent = t;
+  var el = document.getElementById("foot"); el.textContent = txt; el.scrollTop = 0;
 }
 
 function loadStatus() {
-  sh("sh " + ROOT + "/scripts/status-fast.sh 2>&1", function (e, r) {
-    if (e) { setFoot("Error", e); return; }
-    parseFast(out(r));
-    render();
+  findApp().then(function (dir) {
+    var s = dir + "/toolkit/scripts/status-fast.sh";
+    sh("[ -r " + s + " ] && sh " + s + " 2>&1 || sh " + ROOT + "/scripts/status-fast.sh 2>&1", function (e, r) {
+      if (e) { setFoot("Error", e); return; }
+      parseFast(out(r)); render();
+    });
   });
 }
 
-/* ------------------------------- actions ------------------------------- */
-var ACTIONS = {
-  "check":       ROOT + "/scripts/status-fast.sh",
-  "harden":      ROOT + "/oyg harden",
-  "dns-on":      ROOT + "/scripts/dns.sh start",
-  "dns-off":     ROOT + "/scripts/dns.sh stop",
-  "restore-net": ROOT + "/scripts/recover-network.sh",
-  "reboot":      "reboot"
-};
+/* ---------- actions ---------- */
+function labelOf(a) {
+  return { apply: "Apply hardening", check: "Check status", "revert-all": "Revert all",
+           "dns-on": "DNS sink on", "dns-off": "DNS sink off",
+           "restore-net": "Restore network", reboot: "Reboot TV" }[a] || a;
+}
 var busy = false, poller = null;
 function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 
+function cmdFor(act, dir) {
+  var T = dir + "/toolkit";
+  switch (act) {
+    case "apply":      return "sh " + T + "/install.sh && sh " + ROOT + "/oyg harden";
+    case "check":      return "sh " + T + "/scripts/status-fast.sh";
+    case "revert-all": return "sh " + ROOT + "/oyg restore";
+    case "dns-on":     return "sh " + T + "/scripts/dns.sh start";
+    case "dns-off":    return "sh " + T + "/scripts/dns.sh stop";
+    case "restore-net":return "sh " + T + "/scripts/recover-network.sh";
+    case "reboot":     return "reboot";
+  }
+  return null;
+}
+
 function run(act) {
-  if (busy || !ACTIONS[act]) return;
+  if (busy || act === "reboot" && !confirm) { /* fallthrough for reboot */ }
+  if (busy) return;
+  var el = navItems[navIdx];
   busy = true;
-  document.getElementById("health").className = "busy";
-  document.getElementById("health").textContent = "running " + act + "…";
-  setFoot("Running — " + act, "$ " + ACTIONS[act] + "\n");
-  exec(": > " + ALOG + "; nohup sh -c " + sq(ACTIONS[act]) + " >> " + ALOG + " 2>&1 &", function () {
-    if (poller) clearInterval(poller);
-    poller = setInterval(follow, 1500);
-    setTimeout(function () {
-      clearInterval(poller); poller = null; busy = false; loadStatus();
-    }, 12000);
+  document.getElementById("health").className = "health busy";
+  document.getElementById("hlabel").textContent = "running";
+  document.getElementById("hpill").textContent = labelOf(act).toLowerCase();
+  findApp().then(function (dir) {
+    var cmd = cmdFor(act, dir);
+    if (!cmd) { busy = false; return; }
+    setFoot(labelOf(act), "$ " + cmd + "\n\nstarting…");
+    exec(": > " + ALOG + "; nohup sh -c " + sq(cmd) + " >> " + ALOG + " 2>&1 &", function () {
+      if (poller) clearInterval(poller);
+      poller = setInterval(follow, 1500);
+      setTimeout(function () {
+        clearInterval(poller); poller = null; busy = false; loadStatus();
+      }, act === "apply" || act === "revert-all" ? 240000 : 20000);
+    });
   });
 }
 function follow() {
   exec("tail -c 20000 " + ALOG + " 2>/dev/null", function (e, r) {
     if (e) return;
     document.getElementById("footTitle").textContent = "Log";
-    var el = document.getElementById("foot");
-    el.textContent = out(r) || "(no output yet)";
+    var el = document.getElementById("foot"); el.textContent = out(r) || "(no output yet)";
     el.scrollTop = el.scrollHeight;
   });
 }
 
-/* ------------------------------- remote -------------------------------- */
+/* ---------- input ---------- */
 document.addEventListener("keydown", function (ev) {
-  var k = ev.keyCode, handled = true;
+  var k = ev.keyCode, h = true;
   if (k === 38) move("up");
   else if (k === 40) move("down");
   else if (k === 37) move("left");
@@ -288,13 +339,13 @@ document.addEventListener("keydown", function (ev) {
     if (el && el.getAttribute("data-act")) run(el.getAttribute("data-act"));
     else if (el) { pinned = parseInt(el.getAttribute("data-i"), 10); showModule(pinned); }
   }
-  else if (k === 403 || k === 405) run("restore-net");   /* red / yellow */
-  else if (k === 404) run("harden");                     /* green */
-  else if (k === 406) run("check");                      /* blue  */
-  else handled = false;
-  if (handled) ev.preventDefault();
+  else if (k === 403) run("restore-net");
+  else if (k === 404) run("apply");
+  else if (k === 405) run("revert-all");
+  else if (k === 406) run("check");
+  else h = false;
+  if (h) ev.preventDefault();
 });
-
 document.addEventListener("click", function (ev) {
   var el = ev.target.closest && ev.target.closest('[data-kind="mod"],button[data-act]');
   if (!el) return;

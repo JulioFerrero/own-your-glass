@@ -53,6 +53,21 @@ EOF
 PAYLOAD="$WORK/data/usr/palm/applications/$ID"
 mkdir -p "$PAYLOAD"
 cp -R "$SRC"/. "$PAYLOAD"/
+
+# Bundle the toolkit itself: installing the app installs own-your-glass.
+# The app's APPLY button runs <appdir>/toolkit/install.sh, so a single app
+# install is all an operator needs — no separate scp/ssh step.
+TOOLKIT="$PAYLOAD/toolkit"
+mkdir -p "$TOOLKIT"
+for d in modules scripts lib etc; do
+    [ -d "$REPO/$d" ] && cp -R "$REPO/$d" "$TOOLKIT"/
+done
+for f in oyg install.sh uninstall.sh LICENSE README.md; do
+    [ -f "$REPO/$f" ] && cp "$REPO/$f" "$TOOLKIT"/
+done
+find "$TOOLKIT" -name '._*' -delete 2>/dev/null
+find "$TOOLKIT" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
+echo "bundled toolkit: $(find "$TOOLKIT" -type f | wc -l | tr -d ' ') files"
 ( cd "$WORK/data" && tar czf "$WORK/data.tar.gz" . )
 
 printf '2.0\n' > "$WORK/debian-binary"
