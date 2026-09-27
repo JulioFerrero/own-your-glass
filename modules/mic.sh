@@ -6,7 +6,8 @@ OYG_MOD_MIC=1
 # bind-mount /dev/null over each capture PCM node (/dev/snd/pcmC<card>D<dev>c)
 # so open() gets ENXIO and arecord yields 0 bytes; nodes are enumerated
 # dynamically (walk /dev/snd + cross-check /proc/asound/pcm).
-# Playback nodes (NEVER touched): pcmC0D0p … pcmC0D7p.
+# Playback & loopback nodes (NEVER touched): pcmC0D0p … pcmC0D7p,
+# pcmC0D10c (BT audio source / A2DP), pcmC0D14c (WOWCAST soundbar loopback).
 # Details, verification history and findings: docs/FINDINGS.md (F8, F38a)
 
 # State keys (per node):
@@ -58,6 +59,10 @@ mod_mic_list_capture_nodes() {
             /^ *[0-9]+-[0-9]+:/ {
                 split($1, hd, "-");
                 card = hd[1] + 0; dev  = hd[2] + 0;
+                # Exclude internal SoC audio loopback capture endpoints:
+                # - card 0 dev 10 (hw:0,10): Bluetooth audio source (btaudiosrc)
+                # - card 0 dev 14 (hw:0,14): WOWCAST wireless soundbar loopback
+                if (card == 0 && (dev == 10 || dev == 14)) next;
                 rest = $0; sub(/^[^:]*:[^:]*: /, "", rest);
                 if (rest ~ /capture/) printf "/dev/snd/pcmC%dD%dc\n", card, dev;
             }
@@ -90,14 +95,11 @@ mod_mic_list_capture_nodes() {
         found_dynamic=1
     else
         # Fallback list, only used when nothing is enumerable on the box.
-        # This is the device's known capture-node list. Dynamic wins when
-        # ANY source produces output, so this is dead code in production.
+        # This is the device's known capture-node list (excluding loopbacks).
         cat <<'EOF'
-/dev/snd/pcmC0D10c
 /dev/snd/pcmC0D11c
 /dev/snd/pcmC0D12c
 /dev/snd/pcmC0D13c
-/dev/snd/pcmC0D14c
 /dev/snd/pcmC1D0c
 EOF
     fi
@@ -181,8 +183,12 @@ mod_mic_harden() {
     for n in $nodes; do
         # Reject anything that is NOT a capture node (ends in 'c'). The
         # dynamic enumeration already enforces this, but defense-in-depth:
-        # the brief is explicit that playback nodes must never be touched.
+        # playback nodes and internal audio loopbacks must never be touched.
         case "$n" in
+            */pcmC0D10c|*/pcmC0D14c)
+                warn "mic: skipping internal audio loopback $n"
+                continue
+                ;;
             /dev/snd/pcmC[0-9]*D[0-9]*c) ;;
             *)
                 err "mic: refusing to touch non-capture node $n"

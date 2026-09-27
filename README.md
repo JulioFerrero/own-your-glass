@@ -125,7 +125,7 @@ this tool does not touch.
 | Module | Neutralises | Opt-in flag | Reversible? |
 |---|---|---|---|
 | `capture` | Screen-capture leak: `chattr`+`immutable` on `/tmp/capture.rgb`; `mount --bind /dev/null` on `/usr/bin/vtCaptureTestSuite` (read-only `/usr`) | none — safe by default | yes (`umount` + restore mode) |
-| `mic` | All ALSA capture PCMs (`pcmC*D*c`): `chmod 000` + `mount --bind /dev/null`. Playback untouched. | none — safe by default | yes |
+| `mic` | Physical ALSA capture PCMs (`pcmC1D0c`, etc.): `chmod 000` + `mount --bind /dev/null`. Playback and internal loopbacks (`pcmC0D10c` BT A2DP, `pcmC0D14c` WOWCAST) untouched. | none — safe by default | yes |
 | `voice` | Magic Remote mic pipeline: `chmod 000` + bind-null on `voiceinput_hidraw`, `voiceinput`, `voiceconductor`. `/dev/hidraw0` deliberately untouched (carries every other remote button). | none — safe by default | yes |
 | `logs` | Periodic clear of `/tmp/var/log/messages` and `/tmp/app.voice.log` (damage limitation). | none — safe by default | yes (stop the watcher) |
 | `remoteone` | Verifies `/mnt/lg/cmn_data/remoteDebug/` is absent; optionally tightens `cmn_data`. | `OYG_AGGRESSIVE=1` for the chmod step | yes |
@@ -149,7 +149,7 @@ Every module exposes:
 Everything in this toolkit is built from the same four low-level moves, because a rooted webOS TV gives you very few of them.
 
 1. **`mount --bind /dev/null` over a device node or binary** (kills the *pipe*, not the driver).
-   - Over an ALSA PCM like `/dev/snd/pcmC0D10c`: every `open()` returns `ENXIO` / "Inappropriate ioctl for device" — the kernel still owns the driver, the user-space consumer just cannot read from it.
+   - Over an ALSA PCM like `/dev/snd/pcmC1D0c`: every `open()` returns `ENXIO` / "Inappropriate ioctl for device" — the kernel still owns the driver, the user-space consumer just cannot read from it.
    - Over a vendor binary like `/usr/bin/vtCaptureTestSuite` (which lives on a read-only `/usr`, so `chmod 000` fails): any `exec()` reads zeros and fails. Re-launchers hit the bind immediately on the next attempt.
 2. **`mount --bind` a generated file over the read-only `/etc/hosts`** (LG already does this same trick for `/etc/shadow`).
    - The network module emits a hosts file from the blocklists at `/var/lib/own-your-glass/hosts` and bind-mounts it over `/etc/hosts`. Dual-stack: every blocked domain gets **both** `0.0.0.0 <d>` and `::1 <d>` — an IPv4-only sinkhole lets AAAA lookups fall through to DNS.
@@ -730,20 +730,24 @@ interface. So the module:
 3. Records per-node state (original mode, bound flag) so `restore`
    can `umount` exactly what it mounted and restore the original mode.
 
-Playback nodes (`pcmC0D0p` … `pcmC0D7p`) are **never** touched —
-verified on device with `paplay -d pcm_output <file>` after the
-mitigation, playback still works (rc=0).
+Playback nodes (`pcmC0D0p` … `pcmC0D7p`) and internal audio
+loopback capture endpoints (`pcmC0D10c` / `hw:0,10` used by
+`/usr/sbin/btaudiosrc` for Bluetooth A2DP audio streaming, and
+`pcmC0D14c` / `hw:0,14` for WOWCAST wireless soundbars) are **never**
+touched. Binding `pcmC0D10c` causes Bluetooth headphones and speakers
+to receive total silence.
 
 Evidence on the device:
 
 ```
-BEFORE: arecord -D hw:0,10 ... | wc -c   ->  64000 bytes
-APPLY : chmod 000 /dev/snd/pcmC0D10c
-        mount --bind /dev/null /dev/snd/pcmC0D10c
-AFTER : arecord -D hw:0,10 ...
+BEFORE: arecord -D hw:1,0 ... | wc -c   ->  64000 bytes
+APPLY : chmod 000 /dev/snd/pcmC1D0c
+        mount --bind /dev/null /dev/snd/pcmC1D0c
+AFTER : arecord -D hw:1,0 ...
         -> "arecord: main:831: audio open error: Inappropriate ioctl for device"
         -> 0 bytes
 PLAYBACK: paplay -d pcm_output <file>    -> rc=0
+BT-AUDIO: btaudiosrc streams to A2DP    -> active (hw:0,10 open)
 ```
 
 Status is verified actively: when `arecord` is available, the module
@@ -752,12 +756,12 @@ If a capture succeeds, status reports `FAIL` with the byte count.
 If `arecord` is missing, status falls back to the bind-mount state
 and prints a warning that the active check was skipped.
 
-The capture nodes on this device are:
+The physical mic and vendor test capture nodes on this device are:
 
 ```
-/dev/snd/pcmC0D10c  /dev/snd/pcmC0D11c  /dev/snd/pcmC0D12c
-/dev/snd/pcmC0D13c  /dev/snd/pcmC0D14c  /dev/snd/pcmC1D0c
+/dev/snd/pcmC0D11c  /dev/snd/pcmC0D12c  /dev/snd/pcmC0D13c  /dev/snd/pcmC1D0c
 ```
+(`pcmC0D10c` and `pcmC0D14c` are excluded from the bind list to preserve Bluetooth audio and WOWCAST).
 
 This module is in the boot hook (`/var/lib/webosbrew/init.d/oyg`)
 because `mount --bind` does not survive a reboot. The hook re-applies
