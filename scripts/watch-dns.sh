@@ -1,9 +1,16 @@
 #!/bin/sh
 # watch-dns.sh — watchdog for the on-device DNS sinkhole resolver.
-# Every 15 s: re-assert the resolv.conf override (ConnMan regenerates it),
-# probe the resolver, restart it if dead (N tries), and if it will not
-# come back, REVERT the override (umount) — the TV drops onto ConnMan's
-# own resolv.conf (the real upstream), so DNS stays alive unfiltered.
+# Every 15 s: check the resolv.conf override (re-assert it if ConnMan got to
+# it) and that the resolver process is alive; probe the resolver every 2
+# min, or at once when the process is gone; restart it if dead (N tries),
+# and if it will not come back, REVERT the override (umount) — the TV drops
+# onto ConnMan's own resolv.conf (the real upstream), so DNS stays alive
+# unfiltered.
+#
+# WHY THE TICK IS CHEAP (measured 2026-10-22): running dns.sh ensure and a
+# Python probe on every tick cost ~0.21 s of CPU, 1.4% of a core around the
+# clock. The tick is now one awk and one grep; ensure runs only when the
+# override is wrong, and Python only for the probe.
 # NEVER signals, reloads or restarts connmand (guard refuses otherwise;
 # see the post-mortem in scripts/dns.sh).
 #
@@ -25,6 +32,7 @@ OYG_HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 PY=${PY:-python3}
 PROBE_INTERVAL=${OYG_WATCHDNS_INTERVAL:-15}
+PROBE_EVERY=${OYG_WATCHDNS_PROBE_EVERY:-8}
 RESTART_TRIES=${OYG_WATCHDNS_TRIES:-3}
 RESTART_GAP=${OYG_WATCHDNS_GAP:-2}
 FAILS_BEFORE_ACTION=${OYG_WATCHDNS_FAILS:-2}
@@ -37,6 +45,8 @@ WATCHDOG_PID="$OYG_ROOT/watch-dns.pid"
 DNS_BIND=$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)
 DNS_PORT=53
 PROBE_NAME=es.nextlgsdp.com
+RESOLV_TARGET=/etc/resolv.conf
+RESOLV_REAL=$(readlink -f "$RESOLV_TARGET" 2>/dev/null || printf '%s' "$RESOLV_TARGET")
 
 printf '%s\n' "$$" >"$WATCHDOG_PID"
 
@@ -79,11 +89,24 @@ PYEOF
 # resolver_pid_ok — the pid in dns.pid is alive AND is really our resolver.
 # Without the cmdline check we can kill a bystander that reused the pid.
 resolver_pid_ok() {
-    pid=$(cat "$STATE_PID" 2>/dev/null || true)
+    pid=""
+    [ -r "$STATE_PID" ] && read -r pid <"$STATE_PID"
     [ -n "${pid:-}" ] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
-    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'dnssink' || return 1
-    return 0
+    grep -q 'dnssink' "/proc/$pid/cmdline" 2>/dev/null
+}
+
+# override_ok — the same test as dns.sh ensure makes before it changes
+# anything: the override is mounted (read-only) over resolv.conf and its
+# first nameserver is the sink.
+override_ok() {
+    awk -v a="$RESOLV_TARGET" -v b="$RESOLV_REAL" -v s="$DNS_BIND" '
+        FILENAME == "/proc/mounts" {
+            if (($2 == a || $2 == b) && $4 ~ /^ro(,|$)/) m = 1
+            next
+        }
+        $1 == "nameserver" { ok = ($2 == s); exit }
+        END { exit (m && ok) ? 0 : 1 }' /proc/mounts "$RESOLV_TARGET" 2>/dev/null
 }
 
 restart_resolver() {
@@ -114,18 +137,26 @@ main() {
         rm -f "$WATCHDOG_PID" 2>/dev/null || true
         exit 1
     fi
-    log_wd "starting (interval=${PROBE_INTERVAL}s tries=${RESTART_TRIES} fails-before-action=${FAILS_BEFORE_ACTION})"
+    log_wd "starting (interval=${PROBE_INTERVAL}s probe-every=${PROBE_EVERY} tries=${RESTART_TRIES} fails-before-action=${FAILS_BEFORE_ACTION})"
     trap 'rm -f "$WATCHDOG_PID" 2>/dev/null || true; exit 0' TERM INT
 
     fails=0
+    tick=0
     while :; do
         sleep "$PROBE_INTERVAL" 2>/dev/null || sleep 1
         [ "$(state_get dns.applied 2>/dev/null)" = "1" ] || { fails=0; continue; }
 
-        # Periodic re-apply: ConnMan regenerates resolv.conf and would
-        # otherwise clobber our nameservers. Idempotent, never stacks.
-        "$OYG_HERE/dns.sh" ensure >/dev/null 2>&1 \
+        # Re-apply only when needed: ConnMan regenerates resolv.conf and
+        # would otherwise clobber our nameservers. Idempotent, never stacks.
+        override_ok || "$OYG_HERE/dns.sh" ensure >/dev/null 2>&1 \
             || warn_wd "re-assert of the resolv.conf override failed"
+
+        # A live resolver is probed every PROBE_EVERY ticks; a missing one,
+        # or one whose last probe failed, on every tick.
+        tick=$((tick + 1))
+        if [ "$fails" -eq 0 ] && [ $((tick % PROBE_EVERY)) -ne 0 ] && resolver_pid_ok; then
+            continue
+        fi
 
         if probe_resolver; then
             fails=0
