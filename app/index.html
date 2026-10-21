@@ -18,7 +18,7 @@
        DISTANCE-06  TV-safe margins >= 60px
        DISTANCE-07  no thin strokes: weights >= 500, borders >= 2px
        FOCUS-01     focus is never colour alone: 4px rule + brightness + scale
-       FOCUS-05     large focus targets (rows ~86px, keys >= 104px)
+       FOCUS-05     large focus targets (rows 76px, keys >= 96px)
        FOCUS-06     a default focused element on load
        VISUAL_DENSITY 8  no card boxes; rules separate data; mono for numbers
 
@@ -62,7 +62,7 @@
 
   .rows{overflow:auto;min-height:0}
   .sub{display:grid;grid-template-columns:22px minmax(0,1fr) 176px;
-    align-items:center;gap:22px;padding:0 20px 0 16px;height:86px;
+    align-items:center;gap:22px;padding:0 20px 0 16px;height:76px;
     border-bottom:2px solid var(--rule);border-left:4px solid transparent}
   .sub .mark{width:22px;height:22px;background:var(--muted)}
   .sub.ok .mark{background:var(--ok)}
@@ -100,7 +100,12 @@
     box-shadow:inset 0 0 0 4px rgba(226,100,90,.35)}
   button.focus .hint{color:var(--text)}
   button.warnkey.focus .hint{color:var(--text)}
-  .groupname{font-size:26px;color:var(--muted);margin:24px 0 12px}
+  .groupname{font-size:26px;color:var(--muted);margin:20px 0 12px}
+  /* on/off pairs: the name sits on the row and the console explains the
+     focused key, so the column fits without scrolling Restore network away */
+  .pair{display:grid;grid-template-columns:minmax(0,1fr) 1fr 1fr;gap:18px;
+    align-items:center;margin-top:14px}
+  .pair .pairname{font-size:26px;color:var(--muted)}
 
   /* ---- console ---- */
   .console{border-top:2px solid var(--rule);padding:18px 0 24px;height:236px;
@@ -158,10 +163,15 @@
         <button data-act="check">Check again<span class="hint">re-read the status</span></button>
         <button data-act="revert-all">Undo hardening<span class="hint">revert every change</span></button>
       </div>
-      <div class="groupname">DNS blocking</div>
-      <div class="keys">
-        <button data-act="dns-on">Turn on<span class="hint">route lookups to the sink</span></button>
-        <button data-act="dns-off">Turn off<span class="hint">restore normal DNS</span></button>
+      <div class="pair">
+        <span class="pairname">DNS blocking</span>
+        <button data-act="dns-on">Turn on</button>
+        <button data-act="dns-off">Turn off</button>
+      </div>
+      <div class="pair">
+        <span class="pairname">Home screen</span>
+        <button data-act="home-clean">Clean</button>
+        <button data-act="home-stock">Stock</button>
       </div>
       <div class="groupname">If the network breaks</div>
       <div class="keys">
@@ -223,7 +233,7 @@ function sh(cmd, cb) {
 var PLAIN = {
   NETWORK: "Network blocking", DNS: "DNS sinkhole", MICS: "Microphones",
   VOICE: "Voice and transcription", DEBLOAT: "Debloat", APPS: "Hidden apps",
-  POLICY: "Consents and policy", SYSTEM: "System"
+  LAUNCHER: "Home screen", POLICY: "Consents and policy", SYSTEM: "System"
 };
 
 var subs = [];
@@ -380,20 +390,22 @@ function showSub(i) {
 }
 function hintFor(a) {
   return {
-    "apply": "Installs the toolkit into /var/lib/own-your-glass, drops the boot hook, then applies every hardening module.",
+    "apply": "Installs the toolkit into /var/lib/own-your-glass, drops the boot hook, then applies every hardening module. That includes LG's ad and promo settings, the apps LG pushes onto the app bar, HbbTV red-button apps and the phone remote-control API; the home screen layout is left as it is.",
     "check": "Re-reads the status of all subsystems.",
     "revert-all": "Runs oyg restore: every change this toolkit made is undone.",
     "dns-on": "Starts the DNS sinkhole and points the TV's lookups at it.",
     "dns-off": "Stops the DNS sinkhole and restores normal DNS.",
-    "restore-net": "Puts networking back to stock. Works with no connection."
+    "restore-net": "Puts networking back to stock. Works with no connection.",
+    "home-clean": "Turns the home into a wallpaper with your apps docked underneath: the quick cards and recommendation shelves go, the banner area shows the own-your-glass wallpaper. The Recent inputs row goes too: use the Live TV tile or the input button. Kept at every boot.",
+    "home-stock": "Puts LG's own home screen layout back. Ad settings and hidden apps stay as they are."
   }[a] || "Press OK to run this.";
 }
 
 /* ---------- data ---------- */
 var logText = "";
 var MODULES = ["capture","mic","voice","logs","remoteone","apps","policy",
-               "services","debloat","network","perms"];
-var job = null;   /* {startedAt, seen, total, lastLineAt, phase, finished, ok} */
+               "services","debloat","network","perms","launcher"];
+var job = null;   /* {act, startedAt, seen, total, lastLineAt, phase, finished, ok} */
 
 function fmtDur(ms) {
   var s = Math.round(ms / 1000);
@@ -442,6 +454,7 @@ function loadStatus() {
 
 var LABEL = { apply: "Apply hardening", check: "Check again", "revert-all": "Undo hardening",
   "dns-on": "DNS blocking: turn on", "dns-off": "DNS blocking: turn off",
+  "home-clean": "Home screen: clean", "home-stock": "Home screen: stock",
   "restore-net": "Restore network" };
 function labelOf(a) { return LABEL[a] || a; }
 
@@ -458,11 +471,13 @@ function appDir() {
 function cmdFor(act, dir) {
   var T = dir + "/toolkit";
   return {
-    "apply":       "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + T + "/install.sh && OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + ROOT + "/oyg harden",
+    "apply":       "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + T + "/install.sh && OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 OYG_LAUNCHER=1 sh " + ROOT + "/oyg harden",
     "check":       "sh " + ROOT + "/scripts/status-fast.sh",
     "revert-all":  "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + ROOT + "/oyg restore",
     "dns-on":      "sh " + T + "/scripts/dns.sh start",
     "dns-off":     "sh " + T + "/scripts/dns.sh stop",
+    "home-clean":  "OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=1 sh " + T + "/oyg harden --only launcher",
+    "home-stock":  "OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=0 sh " + T + "/oyg harden --only launcher",
     "restore-net": "sh " + T + "/scripts/recover-network.sh"
   }[act];
 }
@@ -490,7 +505,7 @@ function run(act) {
     var cmd = cmdFor(act, dir);
     clearLog(labelOf(act));
     appendLines("$ " + cmd + "\n", false);
-    job = { startedAt: Date.now(), lastLineAt: Date.now(), seen: 0, total: 0,
+    job = { act: act, startedAt: Date.now(), lastLineAt: Date.now(), seen: 0, total: 0,
             phase: (act === "apply" ? "Installing and hardening" : labelOf(act)),
             finished: false, ok: false };
     paintProgress();
@@ -508,7 +523,8 @@ function run(act) {
       follow();
       /* Watch the log for @@EXIT so the UI unlocks the moment the job is
          done; the timer is only a backstop in case the marker never comes. */
-      busyUntil = Date.now() + ((act === "apply" || act === "revert-all") ? 300000 : 60000);
+      busyUntil = Date.now() + ((act === "apply" || act === "revert-all") ? 300000 :
+                                /^home-/.test(act) ? 120000 : 60000);
     });
   });
 }
@@ -543,8 +559,10 @@ function follow() {
     }
     if (job && delta) {
       job.lastLineAt = Date.now();
+      /* "N of total" only means something for a full run: the home-screen
+         keys run one module and keep the indeterminate bar. */
       var heads = text.match(/^==\s*([a-z]+):\s*harden\s*==$/gm);
-      if (heads) {
+      if (heads && job.act === "apply") {
         var total = MODULES.length;
         var seen = heads.length;
         if (!job.total && /install\.sh/.test(text) && !heads.length) job.phase = "Installing toolkit";
@@ -601,6 +619,7 @@ if (DEMO) {
     "DNS|HEADER|DNS sinkhole",
     "DNS|OK|resolver running (pid <n>) on the sink port 53",
     "DNS|OK|query path redirected through the sink",
+    "DNS|OK|resolv.conf lists only the sink",
     "DNS|OK|upstream 80.58.61.254",
     "DNS|OK|284 names blocked so far",
     "MICS|HEADER|Microphones",
@@ -608,13 +627,20 @@ if (DEMO) {
     "VOICE|HEADER|Voice and transcription",
     "VOICE|OK|3 voice binaries neutralised",
     "DEBLOAT|HEADER|Debloat",
-    "DEBLOAT|OK|6 of 6 neutralised binaries bound",
+    "DEBLOAT|OK|10 of 10 neutralised binaries bound",
     "DEBLOAT|OK|no unwanted services running",
     "APPS|HEADER|Hidden apps",
     "APPS|OK|51 apps hidden from the launcher",
+    "LAUNCHER|HEADER|Home screen",
+    "LAUNCHER|OK|10 of 10 LG ad and promo settings off",
+    "LAUNCHER|OK|3 pushed apps hidden from the app bar",
+    "LAUNCHER|OK|wallpaper layout, apps docked below (15 of 15 hero pictures replaced)",
     "POLICY|HEADER|Consents and policy",
     "POLICY|OK|telnet disabled",
     "POLICY|OK|system update blocker is set",
+    "POLICY|OK|HbbTV red-button apps off",
+    "POLICY|OK|phone remote control (SSAP, port 3001) off",
+    "POLICY|OK|LG ad cookie emptied",
     "POLICY|OK|0 of 18 consents accepted",
     "SYSTEM|HEADER|System",
     "SYSTEM|OK|load 34.8 35.1 34.8",
