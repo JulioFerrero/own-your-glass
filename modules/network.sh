@@ -596,10 +596,10 @@ mod_network_status() {
         fi
     fi
 
-    # Layer 4 — DNS sinkhole resolver on 127.0.0.2:53 with a resolv.conf
+    # Layer 4 — DNS sinkhole resolver on $DNS_BIND:53 with a resolv.conf
     # override. Reality checks only (never a state-key check, see the
-    # F14g finding): is the resolver actually answering on 127.0.0.2,
-    # and does the live /etc/resolv.conf actually carry it?
+    # F14g finding): is the resolver actually answering on $DNS_BIND,
+    # and does the live /etc/resolv.conf list it as the first nameserver?
     if [ "$(state_get dns.applied)" != "1" ]; then
         if [ "$(state_get network.dns_resolver)" = "1" ]; then
             print_status PARTIAL "network: layer4 — opted in but dns.applied!=1 (resolv.conf override missing)"
@@ -613,10 +613,11 @@ mod_network_status() {
         else
             print_status FAIL "network: layer4 — resolver NOT answering on $DNS_BIND:$DNS_PORT"
         fi
-        if grep -q '^nameserver[[:space:]]*127\.0\.0\.2' /etc/resolv.conf 2>/dev/null; then
-            print_status OK "network: layer4 — /etc/resolv.conf carries nameserver 127.0.0.2 first"
+        first_ns=$(awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf 2>/dev/null)
+        if [ "$first_ns" = "$DNS_BIND" ]; then
+            print_status OK "network: layer4 — /etc/resolv.conf carries nameserver $DNS_BIND first"
         else
-            print_status FAIL "network: layer4 — /etc/resolv.conf does NOT carry nameserver 127.0.0.2"
+            print_status FAIL "network: layer4 — /etc/resolv.conf first nameserver is ${first_ns:-<none>}, not $DNS_BIND"
         fi
         if grep -q ' /var/lib/misc/resolv.conf ' /proc/self/mountinfo 2>/dev/null \
             || grep -q ' /etc/resolv.conf ' /proc/self/mountinfo 2>/dev/null; then
