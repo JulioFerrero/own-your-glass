@@ -14,8 +14,8 @@
 # ==== END POST-MORTEM ====
 #
 # Hook-in (resolv.conf bind-mount; no daemon interaction): a managed file
-# lists the sink FIRST (bind from $OYG_ROOT/dns.bind: 127.0.0.2 default,
-# 127.0.0.1 under Variant C) and the real upstream as fallback; the
+# lists only the sink (bind from $OYG_ROOT/dns.bind: 127.0.0.2 default,
+# 127.0.0.1 under Variant C; OYG_DNS_FALLBACK=1 adds the upstream); the
 # resolver is PROVEN answering BEFORE the override mounts (no no-DNS
 # window); the watchdog re-asserts in place (ConnMan regenerates
 # resolv.conf); every apply arms a 180 s auto-revert unless confirmed.
@@ -23,6 +23,7 @@
 #
 # Subcommands:
 #   start      resolver up, then apply + confirm (what layer 4 / boot hook call)
+#   failclosed boot hook's first step: resolv.conf -> sink only until start
 #   apply [--keep]   mount the override; auto-revert armed unless --keep
 #   ensure     idempotent re-assert (watchdog)
 #   confirm    disarm the auto-revert timer
@@ -32,7 +33,7 @@
 #
 # State keys (under $OYG_ROOT/state, written via lib/common.sh):
 #   dns.applied=1          resolv.conf override in place
-#   dns.upstream=<ip>      real upstream used as fallback nameserver
+#   dns.upstream=<ip>      real upstream the resolver forwards to
 #
 # Required:
 #   python3 on PATH. All subcommands are idempotent (re-running is safe).
@@ -107,7 +108,7 @@ _dns_upstream_valid() {
     return 0
 }
 
-# Discover the UPSTREAM resolver (the fallback nameserver; NOT something we
+# Discover the UPSTREAM resolver (the server the sink forwards to; NOT something we
 # ever point connmand at). Mirrors dnssink.py's discovery: connectionmanager
 # getStatus -> dns1, then dns2. Do NOT re-introduce "the first IPv4 in the
 # blob" — that yields the netmask 255.255.255.0, which is not a resolver.
@@ -232,13 +233,42 @@ _resolv_is_mounted() {
     return 1
 }
 
-# 0 if the live resolv.conf still names our sinkhole first (ConnMan
-# regenerates the file, which clobbers it — the watchdog re-asserts).
+# 0 if the live resolv.conf still names our sinkhole ($DNS_BIND) as its
+# first nameserver (ConnMan regenerates the file, which clobbers it — the
+# watchdog re-asserts). A hardcoded 127.0.0.2 here made every ensure under
+# Variant C unmount and re-mount a healthy override.
 _resolv_content_ok() {
-    grep -q '^nameserver[[:space:]]*127\.0\.0\.2' "$RESOLV_TARGET" 2>/dev/null
+    first=$(awk '$1 == "nameserver" { print $2; exit }' "$RESOLV_TARGET" 2>/dev/null)
+    [ "$first" = "$DNS_BIND" ]
 }
 
-# Build the managed resolv.conf: our sinkhole FIRST, real upstream SECOND.
+# _resolv_mount — bind-mount the managed file over resolv.conf, read-only.
+# Under Variant C connmand writes resolv.conf itself, in place; through a
+# writable bind mount that write lands in OUR file and swaps the sink for
+# the ISP servers until the next ensure (at boot it undid fail-closed 3 s
+# after mounting). Read-only, its write fails with EROFS. Ours go to
+# $RESOLV_SRC directly, which is not the mount, and still show through.
+_resolv_mount() {
+    mount --bind "$RESOLV_SRC" "$RESOLV_TARGET" 2>/dev/null || return 1
+    _resolv_lock || warn_dns "could not make the resolv.conf override read-only — connmand can still overwrite it"
+    return 0
+}
+
+# _resolv_lock — remount the override read-only; a no-op if it already is.
+_resolv_lock() {
+    t=$(_resolv_real_target)
+    awk -v t="$t" '$5 == t { split($6, o, ","); r = (o[1] == "ro") } END { exit !r }' \
+        /proc/self/mountinfo 2>/dev/null && return 0
+    mount -o remount,ro,bind "$t" 2>/dev/null
+}
+
+# Build the managed resolv.conf: the sinkhole ONLY. It used to list the
+# real upstream second, as a fallback should the resolver die. Any resolver
+# that rotates through the listed servers, queries them in parallel, or
+# moves on after a slow answer could reach the ISP unfiltered through that
+# line (F47). If the resolver dies now, lookups fail until the watchdog
+# restarts it (15 s checks) or reverts the override.
+# OYG_DNS_FALLBACK=1 brings the fallback line back.
 # Written IN PLACE (truncate + rewrite, never mv) so a live bind mount over
 # it keeps showing the new content without re-mounting.
 _write_resolv_src() {
@@ -246,10 +276,10 @@ _write_resolv_src() {
     want="$RESOLV_SRC.want.$$"
     {
         printf '# own-your-glass DNS sinkhole (managed file; bind-mounted over /etc/resolv.conf)\n'
-        printf '# primary: on-device sinkhole resolver. fallback: DHCP-learned upstream,\n'
-        printf '# keeps DNS alive if the resolver dies.\n'
         printf 'nameserver %s\n' "$DNS_BIND"
-        printf 'nameserver %s\n' "$up"
+        if [ "${OYG_DNS_FALLBACK:-0}" = "1" ]; then
+            printf 'nameserver %s\n' "$up"
+        fi
     } >"$want" 2>/dev/null || {
         rm -f "$want" 2>/dev/null || true
         return 1
@@ -334,13 +364,23 @@ _autorevert() {
     exit 0
 }
 
+# The pid file lives under /var and survives reboots, so its presence
+# proves nothing: only a live watch-dns process counts. (A stale file from
+# an earlier boot kept the watchdog from ever starting again.)
+_watchdog_alive() {
+    wp=$(cat "$WATCHDOG_PID" 2>/dev/null || true)
+    [ -n "${wp:-}" ] && kill -0 "$wp" 2>/dev/null \
+        && tr '\0' ' ' <"/proc/$wp/cmdline" 2>/dev/null | grep -q 'watch-dns'
+}
+
 _spawn_watchdog() {
-    if [ -r "$WATCHDOG" ] && [ ! -r "$WATCHDOG_PID" ]; then
-        nohup sh "$WATCHDOG" >>"$OYG_ROOT/dns.log" 2>&1 &
-        # nohup returns; let the daemon write its own pid file.
-        sleep 0.3
-        ok_dns "watchdog spawned"
-    fi
+    [ -r "$WATCHDOG" ] || return 0
+    _watchdog_alive && return 0
+    rm -f "$WATCHDOG_PID" 2>/dev/null || true
+    nohup sh "$WATCHDOG" </dev/null >>"$OYG_ROOT/dns.log" 2>&1 &
+    # nohup returns; let the daemon write its own pid file.
+    sleep 0.3
+    ok_dns "watchdog spawned"
 }
 
 ##############################################################################
@@ -353,6 +393,8 @@ dns.sh — on-device DNS sinkhole operator (resolv.conf bind-mount route)
 
 Usage:
   scripts/dns.sh start              # resolver up + apply + confirm (permanent)
+  scripts/dns.sh failclosed         # boot: resolv.conf -> sink only until start
+                                    # (auto-revert armed; start disarms it)
   scripts/dns.sh apply [--keep]     # mount the resolv.conf override; auto-revert
                                     # armed unless --keep (or run: confirm)
   scripts/dns.sh ensure             # idempotent re-assert (watchdog)
@@ -365,7 +407,7 @@ Usage:
 
 State keys managed under \$OYG_ROOT/state:
   dns.applied        1 if the resolv.conf override is in place
-  dns.upstream       real upstream used as the fallback nameserver
+  dns.upstream       real upstream the resolver forwards to
 
 Auto-revert: every apply arms a background job that unmounts the override
 after ~180 s (OYG_DNS_AUTO_REVERT) unless disarmed by 'confirm' / start.
@@ -415,13 +457,21 @@ cmd_start() {
         printf '%s\n' "$pid" >"$STATE_PID"
         ok_dns "resolver started: $DNS_BIND:$DNS_PORT pid=$pid upstream=$upstream"
 
-        # Prove it answers BEFORE pointing resolv.conf at it.
-        if ! _probe_resolver_direct; then
-            err_dns "resolver up but NOT answering blocked queries on $DNS_BIND:$DNS_PORT — aborting before touching resolv.conf"
-            kill -TERM "$pid" 2>/dev/null || true
-            rm -f "$STATE_PID" 2>/dev/null || true
-            return 1
-        fi
+        # Prove it answers BEFORE pointing resolv.conf at it. Early in boot
+        # python can take seconds to bind: a single probe 0.4 s after the
+        # spawn found nothing listening, and the boot carried on with no
+        # resolver. So keep probing for up to 10 s while it is alive.
+        n=0
+        until _probe_resolver_direct; do
+            n=$((n + 1))
+            if [ "$n" -ge 10 ] || ! kill -0 "$pid" 2>/dev/null; then
+                err_dns "resolver up but NOT answering blocked queries on $DNS_BIND:$DNS_PORT — aborting before touching resolv.conf"
+                kill -TERM "$pid" 2>/dev/null || true
+                rm -f "$STATE_PID" 2>/dev/null || true
+                return 1
+            fi
+            sleep 1
+        done
         ok_dns "resolver verified answering on $DNS_BIND:$DNS_PORT (blocked -> 0.0.0.0/::)"
     fi
 
@@ -461,6 +511,7 @@ cmd_apply() {
 
     if _resolv_is_mounted; then
         ok_dns "resolv.conf override already mounted"
+        _resolv_lock || warn_dns "could not make the resolv.conf override read-only"
         if ! _resolv_content_ok; then
             warn_dns "override mounted but content clobbered (ConnMan regenerated resolv.conf) — re-writing in place"
             _write_resolv_src "$up"
@@ -476,8 +527,8 @@ cmd_apply() {
     if ! _resolv_is_mounted; then
         # Arm the safety net FIRST, then mount.
         _arm_autorevert
-        if mount --bind "$RESOLV_SRC" "$RESOLV_TARGET" 2>/dev/null; then
-            ok_dns "bind-mounted $RESOLV_SRC over $RESOLV_TARGET"
+        if _resolv_mount; then
+            ok_dns "bind-mounted $RESOLV_SRC over $RESOLV_TARGET (read-only)"
         else
             err_dns "mount --bind failed — the TV keeps ConnMan's own resolv.conf; auto-revert is running"
             return 1
@@ -504,6 +555,38 @@ cmd_apply() {
     return 0
 }
 
+# failclosed — the boot hook's first step, before connmand is restarted
+# (Variant C) and before the resolver is up. resolv.conf lists the sink
+# address ONLY, so until 'start' finishes a lookup reaches the sink or
+# fails; nothing falls back to the upstream. 'start' then rewrites the same
+# file in place (the same content, unless OYG_DNS_FALLBACK=1) and disarms the auto-revert. If
+# 'start' never succeeds, the auto-revert unmounts it and the TV is back on
+# ConnMan's own resolv.conf (fail-open, as before).
+cmd_failclosed() {
+    require_root
+    ensure_dirs
+    if _resolv_is_mounted; then
+        ok_dns "resolv.conf override already mounted — fail-closed not needed"
+        return 0
+    fi
+    {
+        printf '# own-your-glass DNS sinkhole — boot fail-closed: sink only until dns.sh start\n'
+        printf 'nameserver %s\n' "$DNS_BIND"
+    } >"$RESOLV_SRC" 2>/dev/null || {
+        err_dns "fail-closed: cannot write $RESOLV_SRC"
+        return 1
+    }
+    _arm_autorevert
+    if _resolv_mount; then
+        state_put dns.applied "1"
+        ok_dns "fail-closed: resolv.conf names only $DNS_BIND until the resolver is up"
+    else
+        _cancel_autorevert
+        err_dns "fail-closed: mount --bind failed — boot DNS stays on ConnMan's resolv.conf"
+        return 1
+    fi
+}
+
 cmd_ensure() {
     require_root
     [ "$(state_get dns.applied 2>/dev/null)" = "1" ] || return 0
@@ -520,10 +603,12 @@ cmd_ensure() {
     ensure_dirs
     _write_resolv_src "$up" || return 1
     if _resolv_is_mounted; then
-        _resolv_content_ok && return 0
         # Mounted but clobbered — rewrite in place (same inode, no re-mount).
-        _write_resolv_src "$up"
-        _resolv_content_ok && return 0
+        _resolv_content_ok || _write_resolv_src "$up"
+        if _resolv_content_ok; then
+            _resolv_lock || warn_dns "could not make the resolv.conf override read-only"
+            return 0
+        fi
         # A stale/foreign mount: unmount and mount fresh.
         warn_dns "resolv.conf mount present but content wrong — unmounting and re-mounting"
         umount "$RESOLV_TARGET" 2>/dev/null \
@@ -532,8 +617,8 @@ cmd_ensure() {
     fi
     _write_resolv_src "$up" || return 1
     if ! _resolv_is_mounted; then
-        if mount --bind "$RESOLV_SRC" "$RESOLV_TARGET" 2>/dev/null; then
-            ok_dns "re-asserted: bind-mounted $RESOLV_SRC over $RESOLV_TARGET"
+        if _resolv_mount; then
+            ok_dns "re-asserted: bind-mounted $RESOLV_SRC over $RESOLV_TARGET (read-only)"
         else
             warn_dns "re-mount failed — resolv.conf is ConnMan's own until the next ensure"
             return 1
@@ -649,7 +734,7 @@ cmd_status() {
         fi
         up=$(state_get dns.upstream 2>/dev/null || true)
         if [ -n "$up" ]; then
-            print_status OK "upstream fallback=$up (also used by the resolver)"
+            print_status OK "upstream=$up (the resolver forwards to it)"
         fi
         if [ -r "$TIMER_PID" ]; then
             tp=$(cat "$TIMER_PID" 2>/dev/null || true)
@@ -723,6 +808,7 @@ main() {
     [ $# -gt 0 ] && shift || true
     case "$sub" in
         start)      cmd_start ;;
+        failclosed) cmd_failclosed ;;
         apply)      cmd_apply "$@" ;;
         ensure)     cmd_ensure ;;
         confirm)    cmd_confirm ;;
