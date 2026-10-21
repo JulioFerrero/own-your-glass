@@ -535,6 +535,7 @@ function finishJob(ok) {
   if (ticker) { clearInterval(ticker); ticker = null; }
   loadStatus();
   if (queued) { var q = queued; queued = null; paintQueued(); run(q); }
+  else if (document.hidden) window.close();   /* left while it ran */
 }
 function follow() {
   exec("tail -c 40000 " + ALOG + " 2>/dev/null", function (e, r) {
@@ -629,6 +630,8 @@ if (DEMO) {
     "DEBLOAT|HEADER|Debloat",
     "DEBLOAT|OK|10 of 10 neutralised binaries bound",
     "DEBLOAT|OK|no unwanted services running",
+    "DEBLOAT|OK|0 unwanted apps loaded in the background",
+    "DEBLOAT|OK|LG preload off for 2 of 2 apps",
     "APPS|HEADER|Hidden apps",
     "APPS|OK|51 apps hidden from the launcher",
     "LAUNCHER|HEADER|Home screen",
@@ -650,7 +653,14 @@ if (DEMO) {
   render();
 } else {
   loadStatus();
-  setInterval(function () { if (!busy) loadStatus(); }, 20000);
+  setInterval(function () { if (!busy && !document.hidden) loadStatus(); }, 20000);
+  /* Leaving the app closes it. webOS otherwise keeps it loaded (~37 MB) with
+     the status poll running behind other apps for hours. A job still
+     running finishes first (finishJob closes then); it runs under nohup, so
+     closing never stops it. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && !busy) window.close();
+  });
 }
 </script>
 </body>
