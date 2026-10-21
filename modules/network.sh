@@ -22,6 +22,11 @@ RESOLV_BACKUP_KEY=network.resolv_backup
 RESOLV_BACKUP_PATH_KEY=network.resolv_target
 
 PUBLIC_RESOLVERS="8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 208.67.222.222 208.67.220.220"
+# LG servers hardcoded by IP, which DNS never sees (STRICT, F48):
+#   156.147.69.32   firmware update check (http://.../CheckSWAutoUpdate.laf)
+#   165.244.62.249  RemoteOne remote-debug relay (ports 6120/6230/6240)
+#   165.244.99.174  RemoteOne
+LG_HARDCODED_IPS="156.147.69.32 165.244.62.249 165.244.99.174"
 
 # -----------------------------------------------------------------------------
 # helpers
@@ -189,8 +194,10 @@ mod_network_layer2_harden() {
     warn "network: layer2 — blackholing hardcoded public resolvers (stops TV-bypassed DNS)."
     warn "network: layer2 — DoH/443 and DoT/853 CANNOT be blocked (no netfilter on this device)."
 
+    targets=$PUBLIC_RESOLVERS
+    [ "${OYG_NETWORK_STRICT:-0}" = "1" ] && targets="$targets $LG_HARDCODED_IPS"
     added=""
-    for r in $PUBLIC_RESOLVERS; do
+    for r in $targets; do
         # NOTE: use `ip route show`, NOT `ip route get`. On this kernel
         # (5.4.268 papikonda, BusyBox ip) `ip route get <ip>` returns
         # "RTNETLINK answers: Invalid argument" for blackhole routes, so a
@@ -214,7 +221,12 @@ mod_network_layer2_harden() {
     done
     state_put "$RESOLV_ROUTES_KEY" "$added"
 
-    if [ "${OYG_DNS_OVERRIDE:-0}" = "1" ]; then
+    # Layer 4 owns resolv.conf when it is on: at boot the file is already the
+    # sink-only (fail-closed) bind-mount, and writing the gateway into it
+    # would route lookups past the sink until layer 4 rewrites it.
+    if [ "${OYG_DNS_OVERRIDE:-0}" = "1" ] && [ "${OYG_DNS_RESOLVER:-0}" = "1" ]; then
+        ok "network: layer2 — resolv.conf override skipped (layer 4 manages resolv.conf)"
+    elif [ "${OYG_DNS_OVERRIDE:-0}" = "1" ]; then
         warn "network: layer2 — OYG_DNS_OVERRIDE=1 will rewrite $RESOLV_TARGET"
         target=$RESOLV_TARGET
         if [ ! -e "$target" ]; then
@@ -473,10 +485,12 @@ mod_network_harden() {
         && warn "network: OYG_DNS_RESOLVER=1 — layer 4 (sinkhole resolver + /etc/resolv.conf override) ENABLED." \
         || ok "network: layer 4 disabled (set OYG_DNS_RESOLVER=1 to install the sinkhole resolver + resolv.conf override)"
 
+    # Layer 4 before layer 3: the sink should be up as early as possible, and
+    # layer 3's lookups go nowhere while resolv.conf is fail-closed at boot.
     mod_network_layer1_harden || warn "network: layer1 failed"
     mod_network_layer2_harden || warn "network: layer2 failed"
-    mod_network_layer3_harden || warn "network: layer3 failed"
     mod_network_layer4_harden || warn "network: layer4 failed"
+    mod_network_layer3_harden || warn "network: layer3 failed"
 
     state_put "network.applied" "1"
     state_put "network.strict"  "${OYG_NETWORK_STRICT:-0}"

@@ -1,13 +1,15 @@
 OYG_MOD_POLICY=1
 
 # policy.sh — LG consent + webOSbrew update-blocker + telnet-disable policy.
-# THREE JOBS, re-applied every boot because the system silently re-accepts
+# Re-applied every boot because the system silently re-accepts
 # consents on component updates (F38). Jobs A/A2 touch webOSbrew flags:
 # block_updates + telnet_disabled (absent flag ⇒ no unauth root-shell
 # telnetd; sshd flag never touched). Job B rewrites accepted:true→false
 # in /var/luna/preferences/eula via sed; backups ONCE, never overwritten.
 # Job C declines the SDX stores A→D (python3; "D" UNVERIFIED; resetEula
-# NOT called); Job D moves the nag aside. Details: docs/FINDINGS.md (F38, F38a, F38b, F43, F43a)
+# NOT called); Job D moves the nag aside. Job E switches HbbTV and the SSAP
+# phone-remote API off through settingsservice; Job F empties the LG ad
+# cookie. Details: docs/FINDINGS.md (F38, F38a, F38b, F43, F43a, F49)
 
 
 POLICY_FLAG=${POLICY_FLAG:-/var/luna/preferences/webosbrew_block_updates}
@@ -31,6 +33,124 @@ POLICY_SDX_STORE_USER=${POLICY_SDX_STORE_USER:-/mnt/lg/user/sdp/eula-service/eul
 POLICY_NAG_PATH=${POLICY_NAG_PATH:-/mnt/lg/cmn_data/sdp/eula-service/marketingAllowedDate.json}
 POLICY_NAG_BACKUP=${POLICY_NAG_BACKUP:-"$OYG_BACKUP/marketingAllowedDate.json.orig"}
 POLICY_NAG_NEUTRALISED_SUFFIX=${POLICY_NAG_NEUTRALISED_SUFFIX:-.neutralised}
+
+# Job E: privacy switches, set through LG's settingsservice
+# (category:key=wanted). The values from before the first run are saved
+# once and put back by restore. OYG_POLICY_KEEP="<key> ..." leaves keys alone.
+#   hbbTV                    HbbTV red-button apps: they load on their own
+#                            with live TV and carry most of the third-party
+#                            trackers seen on the wire (F49)
+#   hbbTvDnt, hbbTvDeviceId  Do-Not-Track on, device ID off, for when
+#                            HbbTV is switched back on
+#   allowMobileDeviceAccess  the SSAP second-screen API on port 3001: after
+#                            one pairing prompt a LAN device gets full remote
+#                            control (LG ThinQ app, Home Assistant). The
+#                            switch alone changes nothing visible on the
+#                            wire, so port 3001 is also limited to localhost
+#                            in xinetd, as LG already does for plain 3000.
+POLICY_SETTINGS='
+option:hbbTV=off
+option:hbbTvDnt=on
+option:hbbTvDeviceId=off
+network:allowMobileDeviceAccess=false
+'
+POLICY_SETTINGS_BACKUP="$OYG_BACKUP/policy-settings.orig"
+
+POLICY_SSAP_XINETD=/etc/xinetd.d/ssg_https
+POLICY_SSAP_LOCAL="$OYG_ROOT/ssg_https"
+
+# Job F: LG's ad cookie (es.ad.lgsmartad.com, set to expire in 2094).
+# /dev/null is bind-mounted over it, so admanager reads and keeps nothing.
+POLICY_AD_COOKIE=${POLICY_AD_COOKIE:-/mnt/lg/cmn_data/admanager/cookie/ad_cookie}
+
+_policy_settings_harden() {
+    have luna-send || { warn "policy: luna-send missing — privacy settings skipped"; return 0; }
+    for spec in $POLICY_SETTINGS; do
+        cat=${spec%%:*}; rest=${spec#*:}; key=${rest%%=*}; want=${rest#*=}
+        case " ${OYG_POLICY_KEEP:-} " in *" $key "*) ok "policy: $cat.$key kept (OYG_POLICY_KEEP)"; continue ;; esac
+        cur=$(oyg_setting_get "$cat" "$key")
+        [ -n "$cur" ] || { ok "policy: setting $cat.$key not on this firmware — skipped"; continue; }
+        if [ "$OYG_DRY_RUN" != "1" ] && ! grep -q "^$cat:$key=" "$POLICY_SETTINGS_BACKUP" 2>/dev/null; then
+            printf '%s:%s=%s\n' "$cat" "$key" "$cur" >>"$POLICY_SETTINGS_BACKUP"
+        fi
+        if [ "$cur" = "$want" ]; then
+            ok "policy: $cat.$key already $want"
+        elif [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: setSystemSettings %s.%s %s -> %s\n' "$cat" "$key" "$cur" "$want"
+        elif oyg_setting_set "$cat" "$key" "$want"; then
+            ok "policy: $cat.$key $cur -> $want"
+        else
+            warn "policy: could not set $cat.$key (still $cur)"
+        fi
+    done
+}
+
+_policy_settings_restore() {
+    [ -r "$POLICY_SETTINGS_BACKUP" ] || return 0
+    while IFS= read -r spec; do
+        [ -n "$spec" ] || continue
+        cat=${spec%%:*}; rest=${spec#*:}; key=${rest%%=*}; val=${rest#*=}
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: setSystemSettings %s.%s -> %s\n' "$cat" "$key" "$val"
+        elif oyg_setting_set "$cat" "$key" "$val"; then
+            ok "policy: $cat.$key restored to $val"
+        else
+            warn "policy: could not restore $cat.$key"
+        fi
+    done <"$POLICY_SETTINGS_BACKUP"
+    [ "$OYG_DRY_RUN" = "1" ] || rm -f "$POLICY_SETTINGS_BACKUP"
+}
+
+_policy_mounted() {
+    awk -v t="$1" '$5 == t { f = 1 } END { exit !f }' /proc/self/mountinfo 2>/dev/null
+}
+
+_policy_xinetd_reload() {
+    xp=$(cat /var/run/xinetd.pid 2>/dev/null)
+    [ -n "$xp" ] && kill -HUP "$xp" 2>/dev/null
+}
+
+# SSAP on 3001 limited to localhost: a copy of the xinetd entry with
+# only_from added, bind-mounted over it, and xinetd told to re-read.
+_policy_ssap_harden() {
+    case " ${OYG_POLICY_KEEP:-} " in *" allowMobileDeviceAccess "*) return 0 ;; esac
+    [ -f "$POLICY_SSAP_XINETD" ] || { ok "policy: no $POLICY_SSAP_XINETD — SSAP port left alone"; return 0; }
+    _policy_mounted "$POLICY_SSAP_XINETD" && { ok "policy: SSAP port 3001 already localhost-only"; return 0; }
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: only_from 127.0.0.1 in %s, reload xinetd\n' "$POLICY_SSAP_XINETD"
+        return 0
+    fi
+    awk '{ print } /^[[:space:]]*port[[:space:]]*=/ { print "    only_from       = 127.0.0.1" }' \
+        "$POLICY_SSAP_XINETD" >"$POLICY_SSAP_LOCAL" && chmod 0644 "$POLICY_SSAP_LOCAL" \
+        || { warn "policy: cannot write $POLICY_SSAP_LOCAL"; return 0; }
+    if run mount --bind "$POLICY_SSAP_LOCAL" "$POLICY_SSAP_XINETD" && _policy_xinetd_reload; then
+        ok "policy: SSAP port 3001 limited to localhost (phones on the LAN are refused)"
+    else
+        warn "policy: could not limit SSAP port 3001"
+    fi
+}
+
+_policy_ssap_restore() {
+    _policy_mounted "$POLICY_SSAP_XINETD" || return 0
+    run umount "$POLICY_SSAP_XINETD" && _policy_xinetd_reload && ok "policy: SSAP port 3001 open to the LAN again"
+}
+
+_policy_cookie_mounted() {
+    awk -v t="$POLICY_AD_COOKIE" '$5 == t { f = 1 } END { exit !f }' /proc/self/mountinfo 2>/dev/null
+}
+
+_policy_cookie_harden() {
+    [ -e "$POLICY_AD_COOKIE" ] || { ok "policy: no LG ad cookie at $POLICY_AD_COOKIE"; return 0; }
+    _policy_cookie_mounted && { ok "policy: LG ad cookie already emptied"; return 0; }
+    run mount --bind /dev/null "$POLICY_AD_COOKIE" \
+        && ok "policy: LG ad cookie emptied (/dev/null bind-mounted over $POLICY_AD_COOKIE)" \
+        || warn "policy: could not bind-mount over $POLICY_AD_COOKIE"
+}
+
+_policy_cookie_restore() {
+    _policy_cookie_mounted || return 0
+    run umount "$POLICY_AD_COOKIE" && ok "policy: LG ad cookie back"
+}
 
 # _policy_eula_count_accepted <file>
 #   Print the number of "accepted":true occurrences in <file>.
@@ -589,6 +709,11 @@ PY
         fi
     fi
 
+    # Job E + F — privacy switches and the ad cookie.
+    _policy_settings_harden
+    _policy_ssap_harden
+    _policy_cookie_harden
+
     if [ "$sdx_store_fail" -gt 0 ]; then
         err "policy: $sdx_store_fail SDX store(s) failed to fully decline — see warnings above"
         # We still mark applied=1 if the flag files + EULA succeeded;
@@ -606,6 +731,11 @@ mod_policy_restore() {
     require_root
 
     rc=0
+
+    # Job E + F — privacy switches and the ad cookie.
+    _policy_settings_restore
+    _policy_ssap_restore
+    _policy_cookie_restore
 
     # Job A — remove the webOSbrew update-blocker flag.
     if [ -e "$POLICY_FLAG" ]; then
@@ -862,5 +992,36 @@ EOF
         print_status N/A "policy/nag: backup exists but neither live nor neutralised path does (eula-service may have rewritten — will be re-neutralised on next boot)"
     else
         print_status N/A "policy/nag: $POLICY_NAG_PATH does not exist on this device"
+    fi
+
+    # Job E: privacy switches (live values).
+    for spec in $POLICY_SETTINGS; do
+        cat=${spec%%:*}; rest=${spec#*:}; key=${rest%%=*}; want=${rest#*=}
+        case " ${OYG_POLICY_KEEP:-} " in *" $key "*) continue ;; esac
+        cur=$(oyg_setting_get "$cat" "$key")
+        if [ -z "$cur" ]; then
+            print_status N/A "policy/settings: $cat.$key not on this firmware"
+        elif [ "$cur" = "$want" ]; then
+            print_status OK "policy/settings: $cat.$key=$cur"
+        else
+            print_status FAIL "policy/settings: $cat.$key=$cur (want $want)"
+        fi
+    done
+
+    if [ -f "$POLICY_SSAP_XINETD" ]; then
+        if _policy_mounted "$POLICY_SSAP_XINETD"; then
+            print_status OK "policy/ssap: port 3001 localhost-only"
+        else
+            print_status FAIL "policy/ssap: port 3001 open to the LAN"
+        fi
+    fi
+
+    # Job F: ad cookie.
+    if [ ! -e "$POLICY_AD_COOKIE" ]; then
+        print_status N/A "policy/cookie: no LG ad cookie on this device"
+    elif _policy_cookie_mounted; then
+        print_status OK "policy/cookie: LG ad cookie emptied"
+    else
+        print_status FAIL "policy/cookie: LG ad cookie in place ($POLICY_AD_COOKIE)"
     fi
 }

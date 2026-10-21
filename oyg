@@ -11,8 +11,6 @@
 # Environment:
 #   OYG_AGGRESSIVE=1          enable risky modules (services-extra, perms,
 #                             remoteone chmod)
-#   OYG_DEBLOAT=1             opt in to the debloat module (stops family /
-#                             buddy / AI / avahi / ruleengine / voice UI)
 #   OYG_NETWORK_BLOCK=1       opt in to the network module (four layers)
 #   OYG_NETWORK_STRICT=1      include STRICT section (ThinQ/voice/AI/LG)
 #   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
@@ -43,9 +41,6 @@ Usage:
 Environment flags (read by individual modules):
   OYG_AGGRESSIVE=1           enable risky modules (services-extra, perms,
                              remoteone chmod)
-  OYG_DEBLOAT=1              opt in to the debloat module (stops family /
-                             buddy / AI / avahi / ruleengine / voice UI;
-                             bind-neutralises preloaded voice-app binary)
   OYG_NETWORK_BLOCK=1        opt in to the network module (four layers)
   OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
   OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
@@ -53,12 +48,26 @@ Environment flags (read by individual modules):
   OYG_DNS_RESOLVER=1         install on-device sinkhole resolver (127.0.0.2:53)
                              and hook it in via a /etc/resolv.conf bind-mount
                              (layer 4; no connmand interaction)
+  OYG_DNS_FALLBACK=1         also list the real upstream in resolv.conf as a
+                             second nameserver (off: lookups only via the sink)
+  OYG_POLICY_KEEP="<key>"    policy settings left alone (hbbTV,
+                             allowMobileDeviceAccess)
   OYG_LOG_INTERVAL=<secs>    logs module clear interval (default 60)
+  OYG_LAUNCHER=1             opt in to the launcher module (ad/promo settings
+                             off, pushed apps and their quick cards hidden,
+                             push list pruned)
+  OYG_LAUNCHER_TRIM=1        also switch the home to the wallpaper layout
+                             (apps docked under a wallpaper); or a list of
+                             section IDs to hide; 0 = stock layout back;
+                             unset = keep as applied
+  OYG_LAUNCHER_WALLPAPER=<f> your own picture for the wallpaper layout
+                             (default = back to the toolkit's)
+  OYG_LAUNCHER_KEEP="<id>"   app IDs the launcher module never hides
 
 Available modules:
   services   stop+kill contentminer/objectdetection/adoverlay/acr/remotediag (and iot-client/pushclient if OYG_AGGRESSIVE=1); also handles luna-launched LS2 services
   capture    neutralise /tmp/capture.rgb screen leak + vtCaptureTestSuite
-  debloat    opt-in (OYG_DEBLOAT=1) — stop+kill unused feature services; bind-neutralise preloaded voice-app binary
+  debloat    stop+kill unused feature services; bind-neutralise preloaded voice-app binary
   mic        mute capture gain (where permitted)
   logs       periodic clear of /tmp/var/log/messages and /tmp/app.voice.log
   network    four-layer mitigation (see docs/DOCUMENTATION.md, "Network module") — layer 1 emits dual-stack (IPv4 + IPv6) hosts-file sinkholes; layer 4 (opt-in OYG_DNS_RESOLVER=1) installs an on-device sinkhole resolver on 127.0.0.2:53 and bind-mounts /etc/resolv.conf over it (no connmand interaction; auto-revert timer on apply)
@@ -86,7 +95,7 @@ list_modules() {
             capture)
                 printf 'capture     chattr+immutable / chmod+watcher on /tmp/capture.rgb; mount --bind /dev/null on vtCaptureTestSuite (vendor ro)\n' ;;
             debloat)
-                printf 'debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine + wowplay (Type=static, sticks); bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + sdx + uploadd (Type=dynamic LS2 service, bind defeats ls-hubd respawn) (+ other luna-launched binaries if present); re-applied on every boot\n' ;;
+                printf 'debloat     stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine/service-logger/rdxd/dmost/ninfod/cups-lpd + wowplay (Type=static, sticks); bind-neutralise /usr/bin/com.webos.app.voice + iconnectivity + uploadd + sportsalarm + amazon-alexa-adapter + performer + nlpmanager + familycare index.js (+ iot-client with aggressive services); re-applied every boot. sdx and ss.gateway are left alone (F42, F48)\n' ;;
             mic)
                 printf 'mic         chmod 000 + mount --bind /dev/null over each ALSA capture PCM (pcmC*D*c); playback preserved\n' ;;
             logs)
@@ -100,9 +109,11 @@ list_modules() {
             apps)
                 printf 'apps        hide a curated list of unwanted apps from the launcher via LG blockedSystemAppList/<REGION>.json (ad machinery, remote-support, SDK examples, demo apps); preserves existing entries; skips IDs absent on device\n' ;;
             policy)
-                printf 'policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (Job B, decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported) and the three SDX/ACR-side stores at /mnt/lg/{cmn_data,cache,user}/sdp/eula-service/eula.json (Job C, A→D for every managementTypeCode); move marketingAllowedDate.json aside (Job D — kills the 2-year "re-allow marketing" toast); re-applied every boot\n' ;;
+                printf 'policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (Job B, decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported) and the three SDX/ACR-side stores at /mnt/lg/{cmn_data,cache,user}/sdp/eula-service/eula.json (Job C, A→D for every managementTypeCode); move marketingAllowedDate.json aside (Job D — kills the 2-year "re-allow marketing" toast); HbbTV and SSAP off, port 3001 localhost-only (Job E); LG ad cookie emptied (Job F); re-applied every boot\n' ;;
             voice)
                 printf 'voice       chmod 000 + mount --bind /dev/null over voiceinput_hidraw / voiceinput / voiceconductor (Magic Remote mic); /dev/hidraw0 untouched\n' ;;
+            launcher)
+                printf 'launcher    opt-in (OYG_LAUNCHER=1) — LG ad/promo/tips/sports-alert settings off; pushed apps (stubs, Rakuten TV, LG Streaming Week) hidden from the app bar with their quick cards; push list pruned; OYG_LAUNCHER_TRIM=1 also switches to the wallpaper layout; re-applied every boot\n' ;;
             *)
                 printf '%s\n' "$m" ;;
         esac
