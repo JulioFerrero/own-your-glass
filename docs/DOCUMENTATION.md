@@ -12,6 +12,7 @@ the full list is in [FINDINGS.md](FINDINGS.md).
 - [Network module: four layers](#network-module-four-layers)
 - [Debloat module: reclaim RAM and attack surface from unused feature services](#debloat-module-reclaim-ram-and-attack-surface-from-unused-feature-services)
 - [Apps module: hide unwanted apps from the launcher](#apps-module-hide-unwanted-apps-from-the-launcher)
+- [Launcher module: a clean home screen](#launcher-module-a-clean-home-screen)
 - [Capture-device neutralisation (the `mic` module)](#capture-device-neutralisation-the-mic-module)
 - [Magic Remote microphone neutralisation (the `voice` module)](#magic-remote-microphone-neutralisation-the-voice-module)
 - [Consent + update-blocker neutralisation (the `policy` module)](#consent--update-blocker-neutralisation-the-policy-module)
@@ -83,14 +84,15 @@ Module      What it does
 services    stop+kill contentminer, objectdetection, adoverlay, acr, remotediag (+ iot-client, pushclient if OYG_AGGRESSIVE=1)
 capture     chattr+immutable / chmod+watcher on /tmp/capture.rgb; mount --bind /dev/null on vtCaptureTestSuite (vendor ro)
 apps        hide a curated list of unwanted apps from the launcher via LG blockedSystemAppList/<REGION>.json (ad machinery, remote-support, SDK examples, demo apps); preserves existing entries; skips IDs absent on device
-debloat     opt-in (OYG_DEBLOAT=1) — stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine + wowplay (Type=static, sticks); bind-neutralise /usr/bin/com.webos.app.voice + ss.gateway (DIAL discovery) + iconnectivity + uploadd (Type=dynamic LS2 service, bind defeats ls-hubd respawn) (+ other luna-launched binaries if present); re-applied on every boot. sdx is deliberately excluded — see F42.
+debloat     stop+kill mycar/familycare/buddyconnector/alwaysready/ai-inference-manager/avahi-{daemon,adaptor}/ruleengine/service-logger/rdxd/dmost/ninfod/cups-lpd + wowplay (Type=static, sticks); bind-neutralise /usr/bin/com.webos.app.voice + iconnectivity + uploadd + sportsalarm + amazon-alexa-adapter + performer + nlpmanager + familycare's index.js (Type=dynamic LS2 services, bind defeats ls-hubd respawn) (+ iot-client with aggressive services); re-applied on every boot. sdx and ss.gateway are deliberately left alone — see F42, F48.
 mic         chmod 000 + mount --bind /dev/null over each ALSA capture PCM (pcmC*D*c); playback preserved
 voice       chmod 000 + mount --bind /dev/null over voiceinput_hidraw / voiceinput / voiceconductor (Magic Remote mic); /dev/hidraw0 untouched
+launcher    opt-in (OYG_LAUNCHER=1) — LG ad/promo/tips/sports-alert settings off; pushed apps (stubs, Rakuten TV, LG Streaming Week) hidden from the app bar with their quick cards; push list pruned; OYG_LAUNCHER_TRIM=1 also switches to the wallpaper layout (home.xml + hero pictures bind-mounted); re-applied every boot
 logs        periodic clear of /tmp/var/log/messages and /tmp/app.voice.log (damage limitation)
 network     three-layer mitigation: /etc/hosts bind-overlay with dual-stack (IPv4 + IPv6 sinkhole) sinkhole (always); blackhole public resolvers (always); per-IP blackhole (opt-in OYG_NETWORK_IPBLOCK=1)
 perms       chmod webOSbrew hbchannel + Google Home runtime paths (opt-in, OYG_AGGRESSIVE=1); re-applied on every boot when previously applied
 remoteone   verify /mnt/lg/cmn_data/remoteDebug/ absent; optionally tighten cmn_data (aggressive)
-policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported)
+policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported); HbbTV and SSAP off (port 3001 localhost-only); LG ad cookie emptied
 ```
 
 Every action is idempotent and reversible. Every mutation is logged.
@@ -165,7 +167,9 @@ Every action is idempotent and reversible. Every mutation is logged.
   a naive override there behind `OYG_DNS_OVERRIDE=1` (default-gateway as
   nameserver); layer 4 instead **bind-mounts a managed file over
   `/etc/resolv.conf`** (the same technique as `/etc/hosts`), which the
-  watchdog re-asserts and `umount` reverts.
+  watchdog re-asserts and `umount` reverts. The mount is **read-only**:
+  ConnMan rewrites resolv.conf in place, and through a writable bind
+  mount that rewrite lands in the managed file (F46).
 - **No DoH / DoT blocking.** Without netfilter we cannot intercept
   TLS/443 (DoH) or TLS/853 (DoT). Layer 2 blackholes the
   hardcoded public DNS resolvers (8.8.8.8, 1.1.1.1, 9.9.9.9, etc.)
@@ -217,9 +221,9 @@ different class of leak.
 | Layer | What it does | What it catches | What it does NOT catch |
 |-------|--------------|-----------------|------------------------|
 | 1. `/etc/hosts` overlay | Generates a hosts file from the blocklists and bind-mounts it over `/etc/hosts` (which is on a read-only overlay on this device). For every blocked domain we emit **both** `0.0.0.0 <d>` and `::1 <d>` — an IPv4-only sinkhole lets AAAA lookups fall through to DNS, so the dual-stack sinkhole is required. | Anything resolving via libc `getent`. The TV's first-party daemons and JavaScript libraries use this path. | Anything that talks DNS directly and IGNORES `/etc/hosts` (verified: `nslookup` and BusyBox's own resolver bypass it). |
-| 2. Resolver bypass mitigation | `ip route add blackhole` for the hardcoded public resolvers (8.8.8.8, 8.8.4.4, 1.1.1.1, 1.0.0.1, 9.9.9.9, 208.67.222.222, 208.67.220.220). Optional: backup + rewrite `/var/lib/misc/resolv.conf` to point at the default gateway (opt-in `OYG_DNS_OVERRIDE=1`). | webOS daemons that bypass `/etc/hosts` by talking to a hardcoded resolver IP directly. | DoH (TCP/443 to `dns.google` etc.) and DoT (TCP/853). No netfilter, no interception possible. |
+| 2. Resolver bypass mitigation | `ip route add blackhole` for the hardcoded public resolvers (8.8.8.8, 8.8.4.4, 1.1.1.1, 1.0.0.1, 9.9.9.9, 208.67.222.222, 208.67.220.220); with `OYG_NETWORK_STRICT=1` also the three LG servers the TV contacts by IP (156.147.69.32 update check, 165.244.62.249 and 165.244.99.174 RemoteOne; F48). Optional: backup + rewrite `/var/lib/misc/resolv.conf` to point at the default gateway (opt-in `OYG_DNS_OVERRIDE=1`). | webOS daemons that bypass `/etc/hosts` by talking to a hardcoded resolver IP directly. | DoH (TCP/443 to `dns.google` etc.) and DoT (TCP/853). No netfilter, no interception possible. |
 | 3. Per-domain IP blackhole | Resolve each blocklist domain via `getent` (with `nslookup` fallback), then `ip route add blackhole` the resulting A records. | Daemons that resolve at startup and cache the IP. Useful when both layer 1 (libc bypass) and layer 2 (hardcoded resolver) miss. | Anything that re-resolves each time (CDNs rotate IPs) — this layer ages badly. |
-| 4. On-device sinkhole resolver via `/etc/resolv.conf` *(opt-in `OYG_DNS_RESOLVER=1`)* | Pure-Python stdlib DNS resolver (UDP + TCP) — suffix-matches the blocklist, returns `0.0.0.0` / `::` / NXDOMAIN for matches, forwards everything else to the real upstream (txn-id preserved). Hooked in by **bind-mounting a managed `/etc/resolv.conf`** over the real one (sink first, DHCP-learned upstream as fallback). Resolver started + verified BEFORE the override; auto-revert timer (180 s) on apply. **No connmand signal/reload ever** (the ConnMan settings route took the TV offline once — see scripts/dns.sh post-mortem); the loopback path is closed instead by launching connmand with `--nodnsproxy` (Variant C, F44), after which the sink owns `127.0.0.1:53`. | Everything that resolves through `/etc/resolv.conf`: webOS daemons using libc `getaddrinfo`, and `nslookup`/BusyBox resolution. This closes the gap documented as F14g in `docs/FINDINGS.md`: libc tools honour `/etc/hosts`, but `nslookup` and the DNS path IGNORE it. | DoH (TCP/443) and DoT (TCP/853) that talk to a hardcoded resolver IP (rare on this TV; latent exposure). Without Variant C: daemons that hard-wire ConnMan's proxy on `127.0.0.1:53` instead of reading resolv.conf. |
+| 4. On-device sinkhole resolver via `/etc/resolv.conf` *(opt-in `OYG_DNS_RESOLVER=1`)* | Pure-Python stdlib DNS resolver (UDP + TCP) — suffix-matches the blocklist, returns `0.0.0.0` / `::` / NXDOMAIN for matches, forwards everything else to the real upstream (txn-id preserved). Hooked in by **bind-mounting a managed `/etc/resolv.conf`** over the real one, read-only so ConnMan's in-place rewrites cannot reach it (sink first, DHCP-learned upstream as fallback). Resolver started + verified BEFORE the override; auto-revert timer (180 s) on apply. **No connmand signal/reload ever** (the ConnMan settings route took the TV offline once — see scripts/dns.sh post-mortem); the loopback path is closed instead by launching connmand with `--nodnsproxy` (Variant C, F44), after which the sink owns `127.0.0.1:53`. | Everything that resolves through `/etc/resolv.conf`: webOS daemons using libc `getaddrinfo`, and `nslookup`/BusyBox resolution. This closes the gap documented as F14g in `docs/FINDINGS.md`: libc tools honour `/etc/hosts`, but `nslookup` and the DNS path IGNORE it. | DoH (TCP/443) and DoT (TCP/853) that talk to a hardcoded resolver IP (rare on this TV; latent exposure). Without Variant C: daemons that hard-wire ConnMan's proxy on `127.0.0.1:53` instead of reading resolv.conf. |
 
 ### Effectiveness, honestly
 
@@ -261,8 +265,9 @@ different class of leak.
   `scripts/dns.sh` contains no ConnMan interaction at all: a guard
   (`oyg_guard_connman_route`) fails loudly if `kill -HUP` /
   `systemctl reload connman` ever reappears. It instead bind-mounts a
-  managed `/etc/resolv.conf` over the real one — `127.0.0.2` first, the
-  DHCP-learned upstream as fallback — starting and verifying the resolver
+  managed `/etc/resolv.conf` over the real one — listing only the sink
+  (F47; `OYG_DNS_FALLBACK=1` adds the DHCP-learned upstream as a second
+  nameserver) — starting and verifying the resolver
   BEFORE the override, with an auto-revert timer (180 s) on every apply.
   The bind address is not hardcoded: `dns.sh` reads `$OYG_ROOT/dns.bind`,
   which starts as `127.0.0.2` and becomes `127.0.0.1` once Variant C is
@@ -272,7 +277,8 @@ different class of leak.
   override (ConnMan regenerates resolv.conf), restarts a dead resolver
   (3 tries), and if it will not come back, reverts the override (umount)
   so the TV drops onto ConnMan's own resolv.conf — never left without DNS
-  (the fallback nameserver carries lookups in the meantime). **Undoing C.**
+  for long (lookups fail between the resolver dying and the watchdog's
+  next 15 s check). **Undoing C.**
   `dns.sh stop` (and therefore `oyg restore` / `uninstall.sh`) detects the
   C state and runs `scripts/rollback-c.sh` first — stock launcher back,
   connmand restarted with its proxy. **Audit trail.**
@@ -315,43 +321,46 @@ bind-mount approach used by layer 1.
 
 ## Debloat module: reclaim RAM and attack surface from unused feature services
 
-Opt-in via `OYG_DEBLOAT=1`. With the flag set, `oyg harden --only debloat`
-stops the following **Tier A + Tier B** targets and persists a
+On by default: `oyg harden` (and the app's Apply hardening) stops the following **Tier A + Tier B** targets and persists a
 boot-time re-apply record so they stay down across reboots:
 
 | Target | Type | What it costs |
 |--------|------|---------------|
 | `com.webos.service.mycar.service` | systemd unit + matching process | car-related app; no car, no use |
-| `com.webos.service.familycare.service` | systemd unit only (`familycare` runs under `iotjs`, so `pidof familycare` does not match; rely on `systemctl stop`) | family-care UI; nobody uses it on this TV |
+| `com.webos.service.familycare.service` | systemd unit, but the service itself is luna-launched as `iotjs .../com.webos.service.familycare/index.js`, so `pidof` never matched and it kept running (F48). Its `index.js` is bind-nulled and the process killed by command line (`cmd:` spec form) | family-care UI; nobody uses it on this TV |
 | `com.webos.service.buddyconnector.service` | systemd unit + matching process | buddy-list sync; unused |
 | `alwaysready.service` | systemd unit + matching process | "always-ready" wake-word listener; mic pipeline is already dead (`voice` module) so this can never fire |
 | `ai-inference-manager.service` | systemd unit + matching process | on-device AI; consents are declined (`policy` module) so its consumers can't talk to the cloud anyway |
-| `avahi-daemon.service` + `avahi-adaptor.service` | systemd units + matching processes | mDNS / Bonjour; unused on this TV |
+| `avahi-daemon.service` + `avahi-adaptor.service` | systemd units + matching processes | a second mDNS / Bonjour stack; AirPlay and Chromecast discovery use `mdnsd` and Chromecast's own responder, which keep running |
+| `wowplay.service` | systemd unit (`Type=static`, stays stopped) | LG's WOW wireless-speaker sync (TV + LG soundbar groups over Wi-Fi). Not screen mirroring: that is `miracast`, left running |
+| `service-logger.service`, `rdxd.service`, `dmost.service`, `ninfod.service`, `cups-lpd.socket` | systemd units + matching processes | usage events (foreground app, first-use apps, HDMI devices), crash/analytics reports for `uploadd`, LG Channels beacons, IPv6 node-information answers to any host, the LPD print server on port 515. Nothing visible depends on them (F48) |
 | `com.webos.service.ruleengine.service` | systemd unit + matching process | ThinQ edge-rules engine; its cloud backend is already blocked by the `network` module |
 | `/usr/bin/com.webos.app.voice` | luna-launched preloaded app, **~51 MB**, NOT a systemd unit | the voice-app UI in the launcher; the mic pipeline it would feed is already neutralised by the `voice` module, so launching it serves no purpose. Neutralised with `chmod 000` + `mount --bind /dev/null` (the proven technique that works on the read-only `/usr`). |
-| `/usr/sbin/lg.thinqai.adapter`, `/usr/sbin/airessrvallocator`, `/usr/sbin/com.webos.service.iotproxy`, `/usr/sbin/sportsalert` | luna-launched binaries (no systemd unit) | ThinQ / AI / IoT / sports-notification consumers; backend cloud is already blocked by `network`, so disabling the front-ends is safe. Verified at runtime: skipped gracefully if absent. |
-| `/usr/palm/services/com.webos.service.dial/discovery-server.js` (process name `ss.gateway`) | luna-launched Node script, NOT a systemd unit | DIAL second-screen / casting discovery server (TCP 8008). argv[0] is set to `ss.gateway` so `pidof ss.gateway` matches. Was burning CPU continuously (**6m09s of accumulated CPU and climbing at the time of observation**). Neutralised with `chmod 000` + `mount --bind /dev/null` and killed by process name. **Kills Chromecast / DIAL "cast to TV" discovery** — the launcher home screen still works. |
+| `/usr/sbin/lg.thinqai.adapter`, `/usr/sbin/airessrvallocator`, `/usr/sbin/com.webos.service.iotproxy`, `/usr/sbin/sportsalarm` | luna-launched binaries (no systemd unit) | ThinQ / AI / IoT / sports-notification consumers; backend cloud is already blocked by `network`, so disabling the front-ends is safe. Verified at runtime: skipped gracefully if absent. (The spec named `sportsalert` until F48; that file never existed.) |
+| `/usr/sbin/amazon-alexa-adapter`, `/usr/sbin/performer`, `/usr/sbin/nlpmanager` | luna-launched binaries | Alexa built-in and the rest of the voice pipeline. With the mic dead they could not hear anything, but the Alexa adapter still held an AVS session open and probed every ~141 s (F48) |
+| `/usr/palm/services/com.webos.service.iotclient/iot-client` | luna-launched, `Type=dynamic` | only with aggressive services (`OYG_AGGRESSIVE=1`, or `iot-client` already in the services module's kill list): the services module kills it, ls-hubd respawns it, so the bind is what keeps it down |
+| ~~`/usr/palm/services/com.webos.service.dial/discovery-server.js` (process name `ss.gateway`)~~ | **withdrawn (F48)** | `ss.gateway` is LG's unified host for every JS service (DIAL, second screen, billing, quick cards, …), restarted by ls-hubd on the next call; DIAL's listener is xinetd's `dial_http`. Killing it broke whatever ran in it and freed memory only until the restart. The next apply unbinds the old entry, so casting from phone apps works again. |
 | `/usr/sbin/iconnectivity` | luna-launched binary (no systemd unit) | LG phone-connectivity helper (TV Companion / mobile pairing). Neutralised the same way. **Kills the "pair your phone" code path** — casting from the ThinQ app also relies on it. |
 | `/usr/sbin/sdx` | luna-launched binary (no systemd unit) | **DELIBERATELY NOT NEUTRALISED** — see F42. LG's Service Delivery eXtension (`com.webos.service.sdx`) downloads the EULA, the ACR config, the smartConfig, performs device authentication, and stamps an encrypted `X-Device-ID` on every service request. Its `server_addr_version.conf` declares 14 endpoints — the `network` module's blocklist covers all of them, so the binary's telemetry is cut without touching the binary itself. Bind-neutralising it silently breaks the TV's gear/Settings button (the launch path goes through `com.webos.app.quicksettings`, which never finishes initialising — `grep QUICKSETTINGS_EDITMODE /tmp/var/log/messages` is the reusable pass/fail signal). **Reproduce with a full reboot, not a live `oyg restore`** — the boot hook re-binds, so live A/B tests contradict each other. |
 
 The binary spec format supports an optional kill-name override
 (`<path>|<proc>`) for cases where the process basename differs from the
-file basename (e.g. `node` running `discovery-server.js` with
-`argv[0]=ss.gateway`). Bind target is always the file path; the
-override only affects the kill step.
+file basename (`uploadd`), and `<path>|cmd:<text>` to kill by command
+line when no process name matches (familycare under `iotjs`). Bind
+target is always the file path; the override only affects the kill
+step. Entries that leave the spec (an older spec, or aggressive services
+turned off) are unbound and forgotten on the next apply.
 
 **Measured on this device (Tier A + Tier B applied):**
 
 - `MemAvailable`: **471 MB → 868 MB** (+397 MB reclaimed, ~84% gain)
 - `MemFree`: **128 MB → 196 MB** (+68 MB reclaimed)
-- `ss.gateway` accumulated CPU: **6m09s and climbing** at the time of
-  observation — was the largest non-system CPU consumer on the device.
-  After applying the module it is gone and does not respawn.
+- These figures include killing `ss.gateway` (since withdrawn, F48),
+  which is restarted on demand, so part of that gain did not last.
 
 Expected RAM reclaim: roughly the working-set of all eight units plus
-~51 MB for the preloaded voice-app binary, plus whatever the three
-Tier B luna-launched binaries were holding (the `ss.gateway` CPU burn
-alone indicates that DIAL discovery was not idle). The full
+~51 MB for the preloaded voice-app binary, plus whatever the Tier B
+luna-launched binaries were holding. The full
 Tier A + Tier B run moves the device from `MemAvailable ~471 MB` to
 `MemAvailable ~868 MB`, which is a meaningful chunk.
 
@@ -465,6 +474,126 @@ merged in.
   content-store / recommendation endpoints via the `/etc/hosts`
   bind-mount and the resolver blackholes. Hiding a local `com.webos.app.*`
   ID will not touch those tiles.
+
+---
+
+## Launcher module: a clean home screen
+
+Opt-in: `OYG_LAUNCHER=1`. Add `OYG_LAUNCHER_TRIM=1` for the wallpaper
+layout. Once applied, the boot hook re-applies it every boot. Findings:
+F41a, F45, F50.
+
+```sh
+OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=1 /var/lib/own-your-glass/oyg harden --only launcher
+/var/lib/own-your-glass/oyg restore --only launcher      # everything back
+```
+
+### What draws the home screen
+
+The home is `com.webos.app.home`, a Flutter app run by
+`flutter-client -i com.webos.app.home` (a keepAlive app started by SAM
+at boot). Three layers decide what it shows:
+
+- **Layout**: read once at start from
+  `/usr/palm/applications/com.webos.app.home/data/flutter_assets/assets/home.xml`.
+  Its items are `globalline` (the left column: profile, notifications,
+  Settings, search), `herobanner`, `qcardList` (quick cards),
+  `appList` (the app bar), `recommendedShelf` (every row below) and a
+  zero-size `quickGuide`.
+- **Which shelves appear**: LG's `ai_home` config, fetched through SDX.
+  SDX answers it from its own cache (`detailconfig.json`) even while the
+  sink blocks the server, so the shelf skeleton always loads.
+- **Ads**: the hero and inline ad banners come from `admanager` and are
+  gated by the `homePromotion` setting.
+
+The app bar also carries apps LG pushes. They are real installed apps
+(F41a): LG writes their IDs into
+`/var/palm/customization/launchpoints/<REGION>/applist.json`, and SAM
+installs some of them as `type:"stub"` placeholders.
+
+### What the module does
+
+| Job | What | How | Undo |
+|---|---|---|---|
+| A settings | `screenSaverAd`, `adCookie`, `aiNudge` (Smart Tips), `sportsAlarm`, `livePromotion`, `livePlus`, `webOSPromotionVideo` off; `lmt` (limit ad tracking) on; `homePromotion` and `contentRecommendation` held off | LG's own `setSystemSettings`; the values from before the first run are saved once to `$OYG_BACKUP/launcher-settings.orig` | values put back |
+| B apps | every stub app, plus `ui30` (Rakuten TV), `webos.day` (LG Streaming Week) and `com.miniclip.eightballpool` (8 Ball Pool), hidden from the app bar; their quick cards removed | `homelaunchpoints/hideLaunchPoint` and `removeQCard`; `OYG_LAUNCHER_KEEP="<id> ..."` exempts apps | `unhideLaunchPoint`, `addQCard` |
+| C push list | `applist.json` keeps only apps that are installed and not hidden, so the not-yet-installed promos (Apple TV, SkyShowtime, LG's VOD app, a gaming portal, …) are no longer queued | rewritten with python3; backup at `$OYG_BACKUP/launcher-applist.<REGION>.json.orig` | backup copied back |
+| D layout (`OYG_LAUNCHER_TRIM`) | the wallpaper layout ([screenshot](images/tv-home.png)): quick cards and shelves gone, the hero grown into a wallpaper over the top two-thirds, the app bar docked below | a `home.xml` with `qcardList` and the 72-unit spacer deleted, `recommendedShelf` at zero size, and `container`, `globalline` and `herobanner` at 1450 units instead of 900, bind-mounted over the original; `etc/home-wallpaper.png` (or `OYG_LAUNCHER_WALLPAPER=<file>`) bind-mounted over the hero's built-in picture, `assets/images/<res>/bg_banner_img*.png` (15 files); the home is restarted to read them | `umount` + restart |
+
+With promotions off the hero only ever shows that built-in picture,
+and it is drawn with cover fit, so any size works; LG's welcome line and
+its Apps button are drawn over the right half (they are compiled into
+the home's `libapp.so`), which is why the wallpaper keeps that side
+dark. `design/icon/wallpaper.sh` renders it from the icon's 3D scene.
+
+`OYG_LAUNCHER_TRIM` also takes a list of item IDs instead of `1`: those
+items are hidden and nothing else changes. The black minimal layout of
+earlier versions is `OYG_LAUNCHER_TRIM="herobanner qcardList recommendedShelf"`;
+a Clean recorded by app 0.8.7 or earlier is read as the wallpaper layout.
+`0` puts the stock layout back and leaves the rest of the module applied.
+Left unset, the layout stays as it was last set (state `launcher.trim`),
+which is how the boot hook and the app's Apply hardening run it.
+
+In the TV app, **Apply hardening** passes `OYG_LAUNCHER=1` (settings,
+pushed apps, push list) and never touches the layout. The **Home screen —
+Clean / Stock** keys run the module with `OYG_LAUNCHER_TRIM=1` / `0`, and
+the status board's Home screen row reads the live settings and launch
+points (`scripts/status-fast.sh`).
+
+### Two traps, both found on the TV
+
+- **Deleting `herobanner` or `recommendedShelf` turns the home black.**
+  The layout parser throws `readXmlFile Error: NoSuchMethodError: The
+  method '[]' was called on null` and renders nothing. Those two items
+  must stay, at zero size: the pattern the stock `quickGuide` already
+  uses. Zero size is not enough for `qcardList`, whose labels still draw
+  over the app bar, so that one is deleted (the parser tolerates it).
+- **`closeByAppId` does not restart the home.** It returns success, but
+  a keepAlive app only hides and keeps its process, so the layout is
+  never re-read. The module ends the process instead, and a fresh one
+  reads `home.xml` again (no CRIU restore). It does not wait for webOS
+  to bring the home back: `com.webos.service.preloadmanager` does that
+  anywhere from 2 to 30 s later, or not at all after a few kills in a
+  row, with an empty screen meanwhile if the home was in front. The
+  module launches it straight away through SAM: in front if it was in
+  front, otherwise in the background with `"preload":"full"` (as
+  preloadmanager does), so live TV or an app stays on screen.
+
+### At boot
+
+preloadmanager first starts the home about two minutes after power-on
+(later if the TV stays in standby), after the boot hook has run. So at
+boot the trimmed `home.xml` is mounted before the home ever reads it
+and nothing is restarted. A background check waits for the home's first
+start and writes its result to `log.txt`:
+`launcher: the home started with the trimmed layout`, or the undo
+(which also unmounts the pictures). If
+the home is already running when the module runs, it is restarted as
+above.
+
+When nothing is mounted over it (every boot), the module compares
+`home.xml` with its saved copy and saves it again if it changed, so a
+firmware update's new layout is the one that gets trimmed.
+
+### Pass/fail signal
+
+After the restart the home log (`/tmp/var/log/home`; its time stamps end
+in `Z` but are local time) must show `[readXmlFile] widget`, and no
+`readXmlFile Error` other than the normal "Unable to load asset
+…/com.webos.app.home/home.xml" (the home always tries that path first).
+The module checks this itself and undoes the mount if it fails, so a bad
+layout cannot leave a black home behind. Settings is the other thing to
+check, as in F42: the gear opens `com.webos.app.quicksettings` through
+`systemUIManager`, and it was verified opening fully after the trim.
+
+### What it does not do
+
+- The zero-size shelves still ask LG for their content. The sink
+  answers those requests with nothing.
+- SDX's cached `ai_home` shelf list is left alone (F42: SDX keeps the
+  Settings UI alive).
+- New stubs LG pushes are hidden at the next boot, not the moment they
+  arrive.
 
 ---
 
@@ -735,6 +864,35 @@ means the system flipped an entry back between harden and status;
 re-running the module closes the gap, which is exactly why the boot
 hook does so on every boot.
 
+### Job E — HbbTV and the phone remote
+
+Set through LG's `com.webos.settingsservice/setSystemSettings`, with the
+values from before the first run saved once to
+`$OYG_BACKUP/policy-settings.orig` for `restore` (F48, F49):
+
+| Setting | Set to | Why |
+|---|---|---|
+| `option.hbbTV` | `off` | HbbTV red-button pages load by themselves with live TV and carry most of the third-party trackers seen on the wire (comScore, Adobe Analytics, Conviva, Youbora, Tag Manager, Smartclip) |
+| `option.hbbTvDnt`, `option.hbbTvDeviceId` | `on`, `off` | Do-Not-Track on and no device ID, in case HbbTV is switched back on |
+| `network.allowMobileDeviceAccess` | `false` | the SSAP second-screen API: after one pairing prompt, a device on the LAN gets full remote control |
+
+The SSAP switch could not be shown to change anything on the wire, so
+the module also closes the port itself: xinetd serves SSAP on 3000
+(LG already limits it to `127.0.0.1`) and 3001 (TLS, open to the LAN).
+A copy of `/etc/xinetd.d/ssg_https` with `only_from = 127.0.0.1` is
+bind-mounted over it and xinetd re-reads its configuration (`SIGHUP`;
+the other listeners are unaffected). From the LAN both ports now close
+straight away. `OYG_POLICY_KEEP="hbbTV allowMobileDeviceAccess"` leaves
+either alone (keep SSAP if you use the LG ThinQ app or Home Assistant
+as a remote).
+
+### Job F — LG's ad cookie
+
+`/mnt/lg/cmn_data/admanager/cookie/ad_cookie` holds the cookie for
+`es.ad.lgsmartad.com` (set to expire in 2094) and outlives the
+`adCookie` setting. `/dev/null` is bind-mounted over it, so admanager
+reads nothing and nothing it writes is kept. `restore` unmounts it.
+
 ---
 
 ## Router-level enforcement (the real fix for the resolver-bypass gap)
@@ -793,6 +951,7 @@ own-your-glass/
 │   ├── apps.sh
 │   ├── mic.sh
 │   ├── voice.sh
+│   ├── launcher.sh
 │   ├── logs.sh
 │   ├── network.sh
 │   ├── perms.sh
@@ -828,10 +987,43 @@ defers gracefully if the network is not yet up.
 
 At boot the hook:
 
-1. Waits up to 30s for a default route. If none appears, network-
+1. **Points DNS at the sink before anything else** (when state shows
+   `network.applied=1` and `network.dns_resolver=1`): `dns.sh failclosed`
+   bind-mounts a resolv.conf that names only the sink address, with the
+   180 s auto-revert armed. Until the resolver is up, a lookup reaches the
+   sink or fails; nothing falls back to the upstream. This step used to
+   come last, after every other module, and LG's servers answered the home
+   screen in that ~45 s gap (F46).
+2. **If Variant C is active** (`dns.bind` = `127.0.0.1` and
+   `connman.sh.patched` exists), re-applies the patched connman launcher
+   (the bind-mount dies at reboot) and restarts connmand so its proxy
+   stays off, then waits up to 90 s for Wi-Fi. It logs the nameservers
+   resolv.conf lists afterwards (`C: resolv.conf names:`), which must be
+   the sink address only. That depends on the override being read-only:
+   connmand started with `--nodnsproxy` writes resolv.conf itself, in
+   place, and through a writable bind mount that write landed in the
+   managed file and put the ISP servers back 3 s after fail-closed. The
+   override is now remounted read-only, so connmand's write fails and
+   dns.sh keeps writing the source file directly (F46).
+3. Waits up to 30s for a default route. If none appears, network-
    dependent modules are skipped and a warning is logged.
-2. Re-applies `capture`, `mic`, `voice`, `logs`, `remoteone`,
-   `apps`, `policy` (safe modules). The `capture` re-apply also re-establishes
+4. If `$OYG_ROOT/state` shows `network.applied=1`, re-applies the
+   network module: layer 1 (the `/etc/hosts` bind mount), layer 2 (the
+   resolver blackholes; its resolv.conf rewrite is skipped while layer 4
+   is on, because layer 4 owns that file), then layer 4, then layer 3
+   (only if state also shows `network.ipblock=1`). Layer 4 is re-applied
+   only if state has `network.dns_resolver=1`; `dns.sh start` brings the
+   resolver up and VERIFIES it (probing for up to 10 s, since python can
+   take seconds to bind this early in boot), rewrites the fail-closed resolv.conf in
+   place (same content unless `OYG_DNS_FALLBACK=1`), disarms the auto-revert, and starts the
+   watchdog (a pid file left over from an earlier boot no longer stops
+   it). The hosts file's mtime is watched by the running resolver, so an
+   `oyg harden --only network` after editing blocklists picks them up
+   without a restart. All opt-in flags are re-derived from the state file
+   so the boot environment doesn't need to know about them.
+5. Re-applies `capture`, `mic`, `voice`, `logs`, `remoteone`,
+   `apps`, `policy` (safe modules), each bounded by `timeout 300` so one
+   that hangs cannot hold up the rest of the hook. The `capture` re-apply also re-establishes
    the bind-mount on `/usr/bin/vtCaptureTestSuite`, since
    `mount --bind` does not survive a reboot — and re-tightens
    `/tmp/capture.rgb` via the watcher. The `voice` re-apply
@@ -848,7 +1040,13 @@ At boot the hook:
    consent entries in `/var/luna/preferences/eula` (the system
    silently re-accepts them on component updates; see `policy`
    module section above).
-3. Reads `/var/lib/own-your-glass/services.stopped` (one unit per
+6. If `$OYG_ROOT/state` shows `launcher.applied=1`, re-applies the
+   `launcher` module with `OYG_LAUNCHER_TRIM` taken from state: settings
+   re-checked, newly pushed apps hidden, the push list pruned again, and
+   the trimmed `home.xml` re-mounted. The home normally has not started
+   yet, so it reads the trimmed layout itself; a background check
+   confirms it (see the launcher section above).
+7. Reads `/var/lib/own-your-glass/services.stopped` (one unit per
    line) and `systemctl stop`s each entry, then reads
    `/var/lib/own-your-glass/services.kill` (one process name per
    line) and `kill -TERM`s (then `-KILL` if needed) each matching
@@ -858,25 +1056,7 @@ At boot the hook:
    boot". The hook is tolerant of a missing file, of services that
    are already inactive, and of processes that aren't running. Each
    action is logged to `boot.log`.
-4. If `$OYG_ROOT/state` shows `network.applied=1`, re-applies the
-   network module (which re-applies layer 1 — the `/etc/hosts` bind
-   mount — and layer 2 — the resolver blackholes). Layer 3 is
-   re-applied only if the state also shows `network.ipblock=1`. Layer 4   (the on-device sinkhole resolver, hooked in via a
-   `/etc/resolv.conf` bind-mount) is re-applied only if state has
-   `network.dns_resolver=1`; the boot hook exports `OYG_DNS_RESOLVER=1`
-   so layer 4's harden path takes effect. `dns.sh start` brings the
-   resolver up and VERIFIES it before mounting the override, so boot-time
-   lookups never fail (until then resolv.conf is ConnMan's own). The hosts
-   file's mtime is watched by the running resolver, so an
-   `oyg harden --only network` after editing blocklists picks them up
-   without a restart. All opt-in flags are re-derived from the state file
-   so the boot environment doesn't need to know about them. **If Variant C
-   is active** (`dns.bind` = `127.0.0.1` and `connman.sh.patched` exists),
-   the hook first re-applies the patched connman launcher (the bind-mount
-   dies at reboot) and restarts connmand so the proxy stays off — at boot
-   this is safe, nothing is using the network yet — then waits up to 90 s
-   for Wi-Fi before layer 4 starts.
-5. If `$OYG_ROOT/state` shows `perms.applied=1`, re-applies the
+8. If `$OYG_ROOT/state` shows `perms.applied=1`, re-applies the
    `perms` module (chmods webOSbrew hbchannel + Google Home runtime
    paths). The opt-in flag (`OYG_AGGRESSIVE=1`) is re-exported from
    state so the boot environment does not need it. The block runs
