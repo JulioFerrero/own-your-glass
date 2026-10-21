@@ -273,8 +273,11 @@ different class of leak.
   which starts as `127.0.0.2` and becomes `127.0.0.1` once Variant C is
   applied (connmand started with `--nodnsproxy` so the sink can own the
   loopback port every consumer uses). **Watchdog.** `scripts/watch-dns.sh`
-  polls every 15 s; it re-asserts the
-  override (ConnMan regenerates resolv.conf), restarts a dead resolver
+  checks every 15 s that the override is mounted read-only and names the
+  sink (one awk) and that the resolver process is alive (one grep); it
+  re-asserts the override only when that check fails (ConnMan regenerates
+  resolv.conf), probes the resolver with a real query every 2 min or at
+  once when the process is gone, restarts a dead resolver
   (3 tries), and if it will not come back, reverts the override (umount)
   so the TV drops onto ConnMan's own resolv.conf — never left without DNS
   for long (lookups fail between the resolver dying and the watchdog's
@@ -340,6 +343,7 @@ boot-time re-apply record so they stay down across reboots:
 | `/usr/sbin/amazon-alexa-adapter`, `/usr/sbin/performer`, `/usr/sbin/nlpmanager` | luna-launched binaries | Alexa built-in and the rest of the voice pipeline. With the mic dead they could not hear anything, but the Alexa adapter still held an AVS session open and probed every ~141 s (F48) |
 | `/usr/palm/services/com.webos.service.iotclient/iot-client` | luna-launched, `Type=dynamic` | only with aggressive services (`OYG_AGGRESSIVE=1`, or `iot-client` already in the services module's kill list): the services module kills it, ls-hubd respawns it, so the bind is what keeps it down |
 | ~~`/usr/palm/services/com.webos.service.dial/discovery-server.js` (process name `ss.gateway`)~~ | **withdrawn (F48)** | `ss.gateway` is LG's unified host for every JS service (DIAL, second screen, billing, quick cards, …), restarted by ls-hubd on the next call; DIAL's listener is xinetd's `dial_http`. Killing it broke whatever ran in it and freed memory only until the restart. The next apply unbinds the old entry, so casting from phone apps works again. |
+| `youtube.leanback.v4` and `com.webos.app.lgchannels` (preload off, closed), `amazon.alexapr` (closed) | apps LG keeps loaded in the background | YouTube is preloaded "semi-full" (60–70 MB) and loaded again after every close by LG's preload manager; LG Channels' preload reserves 100 MB; the Alexa voice overlay (~37 MB) loads at boot although Alexa is already off. Their preload is switched off and background copies are closed, never the app on screen. They still open normally, a little slower the first time (F51) |
 | `/usr/sbin/iconnectivity` | luna-launched binary (no systemd unit) | LG phone-connectivity helper (TV Companion / mobile pairing). Neutralised the same way. **Kills the "pair your phone" code path** — casting from the ThinQ app also relies on it. |
 | `/usr/sbin/sdx` | luna-launched binary (no systemd unit) | **DELIBERATELY NOT NEUTRALISED** — see F42. LG's Service Delivery eXtension (`com.webos.service.sdx`) downloads the EULA, the ACR config, the smartConfig, performs device authentication, and stamps an encrypted `X-Device-ID` on every service request. Its `server_addr_version.conf` declares 14 endpoints — the `network` module's blocklist covers all of them, so the binary's telemetry is cut without touching the binary itself. Bind-neutralising it silently breaks the TV's gear/Settings button (the launch path goes through `com.webos.app.quicksettings`, which never finishes initialising — `grep QUICKSETTINGS_EDITMODE /tmp/var/log/messages` is the reusable pass/fail signal). **Reproduce with a full reboot, not a live `oyg restore`** — the boot hook re-binds, so live A/B tests contradict each other. |
 
@@ -350,6 +354,19 @@ line when no process name matches (familycare under `iotjs`). Bind
 target is always the file path; the override only affects the kill
 step. Entries that leave the spec (an older spec, or aggressive services
 turned off) are unbound and forgotten on the next apply.
+
+**Background apps (pass 3).** `DEBLOAT_APPS_SPEC` lists `<appId>|<how>`.
+`preload` switches the app off in LG's preload manager
+(`luna://com.webos.service.preloadmanager/setPreloadPolicy` with
+`{"application":{"id":…,"isEnabled":false}}`; the old value is saved as
+`debloat.preload.<appId>.prev` for restore). `close` closes the app when
+it is loaded behind the one on screen, through the web-app manager's
+`killApp`: SAM's `closeByAppId` returns success for the Alexa overlay and
+leaves it running, and a killed renderer is back within 2 s. The preload
+switch is held in memory, so the boot hook re-applies it, and it runs this
+pass once more two minutes after the hook (`OYG_DEBLOAT_APPS_ONLY=1`) for
+apps LG loads late. Restore sets the preload switches back; closed apps
+are not reopened, LG loads them again when it wants them.
 
 **Measured on this device (Tier A + Tier B applied):**
 
