@@ -21,8 +21,8 @@
 #     one-by-one — blocking `nextlgsdp.com` did nothing for `es.nextlgsdp.com`.
 #   - 127.0.0.2 is in the loopback /8 and is bindable (verified). The
 #     sinkhole is wired in by `scripts/dns.sh`, which bind-mounts a
-#     managed /etc/resolv.conf over the real one (127.0.0.2 first, the
-#     DHCP-learned upstream as fallback). The PREVIOUS route — editing
+#     managed /etc/resolv.conf over the real one (listing only the sink;
+#     see F47). The PREVIOUS route — editing
 #     connman's service settings and nudging connmand — took this TV off
 #     the network for ~30 minutes and is banned: this toolkit NEVER
 #     signals, reloads or restarts connmand (see the post-mortem in

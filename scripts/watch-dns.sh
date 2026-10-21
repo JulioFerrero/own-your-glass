@@ -3,7 +3,7 @@
 # Every 15 s: re-assert the resolv.conf override (ConnMan regenerates it),
 # probe the resolver, restart it if dead (N tries), and if it will not
 # come back, REVERT the override (umount) — the TV drops onto ConnMan's
-# own resolv.conf and the fallback nameserver keeps DNS alive.
+# own resolv.conf (the real upstream), so DNS stays alive unfiltered.
 # NEVER signals, reloads or restarts connmand (guard refuses otherwise;
 # see the post-mortem in scripts/dns.sh).
 #
