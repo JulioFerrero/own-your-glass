@@ -43,7 +43,7 @@ install_files() {
         [ -f "$f" ] || continue
         cp "$f" "$OYG_DST/modules/$(basename "$f")"
     done
-    for f in "$OYG_SRC/etc"/*.txt; do
+    for f in "$OYG_SRC/etc"/*.txt "$OYG_SRC/etc"/*.png; do
         [ -f "$f" ] || continue
         cp "$f" "$OYG_DST/etc/$(basename "$f")"
     done
@@ -59,7 +59,7 @@ install_files() {
     done
     chmod 0755 "$OYG_DST/oyg"
     chmod 0644 "$OYG_DST/lib/common.sh" 2>/dev/null || true
-    for f in "$OYG_DST/etc"/*.txt; do
+    for f in "$OYG_DST/etc"/*.txt "$OYG_DST/etc"/*.png; do
         [ -f "$f" ] || continue
         chmod 0644 "$f"
     done
@@ -129,6 +129,43 @@ DEBLOAT_STOPPED_LIST=$OYG_DST/debloat.units.stopped
 DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
 {
     date '+%Y-%m-%dT%H:%M:%S boot-hook start'
+    # Bound each module so one that hangs cannot hold up the rest of the
+    # hook (one boot's log stopped after policy and the sink never started).
+    T=""
+    command -v timeout >/dev/null 2>&1 && T="timeout 300"
+
+    # DNS first. Every other module used to run before the sink came up, and
+    # in that gap (~45 s) LG's servers filled the home screen and pushed app
+    # installs. From here resolv.conf names only the sink (fail-closed);
+    # dns.sh start, run by the network module below, rewrites it (the same
+    # content unless OYG_DNS_FALLBACK=1) and disarms the auto-revert that
+    # failclosed armed.
+    if [ -r "\$STATE" ] && grep -q '^network.applied=1' "\$STATE" \\
+        && grep -q '^network.dns_resolver=1' "\$STATE"; then
+        sh $OYG_DST/scripts/dns.sh failclosed
+    fi
+
+    # Variant C persistence: connmand must come up with --nodnsproxy or its
+    # proxy re-takes 127.0.0.1:53 and the sink cannot bind. The launcher
+    # bind-mount does not survive reboot, so re-apply it here. The restart
+    # drops Wi-Fi for 7-27 s; with resolv.conf already fail-closed, nothing
+    # resolves through ConnMan in the meantime.
+    if [ "\$(cat $OYG_DST/dns.bind 2>/dev/null)" = "127.0.0.1" ] \\
+        && [ -x $OYG_DST/connman.sh.patched ] \\
+        && ! awk '\$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
+        echo "[boot-hook] C: mounting patched connman launcher (-r)"
+        mount --bind $OYG_DST/connman.sh.patched /etc/systemd/system/scripts/connman.sh \\
+            && systemctl daemon-reload \\
+            && systemctl restart connman
+        n=0
+        while [ \$n -lt 90 ]; do
+            ip -4 addr show wlan0 2>/dev/null | grep -q 'inet ' && break
+            sleep 1; n=\$((n + 1))
+        done
+        echo "[boot-hook] C: connman restarted (wlan0 wait \${n}s)"
+        echo "[boot-hook] C: resolv.conf names: \$(grep '^nameserver' /etc/resolv.conf | tr '\n' ' ')"
+    fi
+
     # Wait briefly for the network to come up. The /etc/hosts bind-mount
     # and any ip-route work need a routable interface.
     waited=0
@@ -146,6 +183,38 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         echo "[boot-hook] WARN: no default route after 30s — network-dependent modules will be skipped"
     fi
 
+    # Network re-apply: only when (a) the user previously hardened the
+    # network module (state has network.applied=1), AND (b) the network is
+    # up. We re-derive the opt-in flags from state so we don't need them in
+    # the boot environment. Not wrapped in timeout: dns.sh start leaves the
+    # resolver running in the background.
+    if [ "\$net_up" = "1" ] && [ -r "\$STATE" ] \\
+        && grep -q '^network.applied=1' "\$STATE"; then
+        # The state file records which risky sub-flags the user enabled.
+        # We export them so the network module's harden entry point will
+        # accept the request at boot.
+        export OYG_NETWORK_BLOCK=1
+        if grep -q '^network.strict=1' "\$STATE"; then
+            export OYG_NETWORK_STRICT=1
+        fi
+        if grep -q '^network.ipblock=1' "\$STATE"; then
+            export OYG_NETWORK_IPBLOCK=1
+        fi
+        if grep -q '^network.dns_override=1' "\$STATE"; then
+            export OYG_DNS_OVERRIDE=1
+        fi
+        if grep -q '^network.dns_resolver=1' "\$STATE"; then
+            export OYG_DNS_RESOLVER=1
+        fi
+        $OYG_DST/oyg harden --only network
+        # The network module's layer 4 (dns.sh start) is idempotent: it
+        # brings the resolver up FIRST and only then points resolv.conf at
+        # it, and it disarms the auto-revert timer on success. This hook
+        # restarts connmand only for Variant C above; dns.sh itself NEVER
+        # signals, reloads or restarts it (see the post-mortem in
+        # scripts/dns.sh).
+    fi
+
     # Re-apply capture (this re-establishes the bind-mount on
     # /usr/bin/vtCaptureTestSuite, which does NOT survive a reboot, and
     # re-tightens /tmp/capture.rgb via the watcher), mic (re-binds
@@ -161,13 +230,21 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # them when related components update; re-touches the webOSbrew
     # update-blocker flag because touch is idempotent and the file does
     # not survive a firmware reset).
-    $OYG_DST/oyg harden --only capture
-    $OYG_DST/oyg harden --only mic
-    $OYG_DST/oyg harden --only voice
-    $OYG_DST/oyg harden --only logs
-    $OYG_DST/oyg harden --only remoteone
-    $OYG_DST/oyg harden --only apps
-    $OYG_DST/oyg harden --only policy
+    for m in capture mic voice logs remoteone apps policy; do
+        \$T $OYG_DST/oyg harden --only "\$m" || echo "[boot-hook] WARN: \$m failed or timed out"
+    done
+
+    # Launcher re-apply: only when the user previously hardened it (state has
+    # launcher.applied=1). Settings and hidden apps persist on their own, but
+    # LG keeps pushing apps and the home.xml bind-mount does not survive a
+    # reboot. The home usually has not started yet at this point
+    # (preloadmanager starts it ~2 min after power-on), so it reads the
+    # trimmed layout itself; the module checks that in the background.
+    # The trim itself comes from state (launcher.trim) inside the module.
+    if [ -r "\$STATE" ] && grep -q '^launcher.applied=1' "\$STATE"; then
+        export OYG_LAUNCHER=1
+        \$T $OYG_DST/oyg harden --only launcher || echo "[boot-hook] WARN: launcher failed or timed out"
+    fi
 
     # Enforce previously-stopped services. systemctl mask is impossible
     # on this device (read-only /etc), so the model is "stop now + stop
@@ -224,14 +301,12 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # Debloat re-apply: only when the user previously hardened the debloat
     # module (state has debloat.applied=1). Unlike the network module,
     # this does NOT depend on the network being up — debloat is purely
-    # local process + bind-mount work. The debloat module's harden entry
-    # point is gated on OYG_DEBLOAT=1; we re-export it from state so the
-    # operator does not need to set it in the boot environment. We also
-    # re-enforce the persisted debloat.units.stopped + debloat.procs.kill
+    # local process + bind-mount work. Gated on state rather than run on
+    # every boot so that `oyg restore` (Undo hardening) stays undone after a
+    # reboot. We also re-enforce the persisted debloat.units.stopped + debloat.procs.kill
     # lists using the same TERM/KILL pattern as services, so any process
     # that the system respawned since boot is killed again.
     if [ -r "\$STATE" ] && grep -q '^debloat.applied=1' "\$STATE"; then
-        export OYG_DEBLOAT=1
         $OYG_DST/oyg harden --only debloat
     fi
     if [ -r "\$DEBLOAT_STOPPED_LIST" ]; then
@@ -273,57 +348,6 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         done <"\$DEBLOAT_KILL_LIST"
     fi
 
-    # Variant C persistence: connmand must come up with --nodnsproxy or its
-    # proxy re-takes 127.0.0.1:53 and the sink cannot bind. The launcher
-    # bind-mount does not survive reboot, so re-apply it here — at boot a
-    # connman restart is safe (nothing uses the network yet, and the wifi
-    # re-association has taken 7-27s in every observed restart).
-    if [ "\$(cat $OYG_DST/dns.bind 2>/dev/null)" = "127.0.0.1" ] \
-        && [ -x $OYG_DST/connman.sh.patched ] \
-        && ! awk '\$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
-        echo "[boot-hook] C: mounting patched connman launcher (-r)"
-        mount --bind $OYG_DST/connman.sh.patched /etc/systemd/system/scripts/connman.sh \
-            && systemctl daemon-reload \
-            && systemctl restart connman
-        n=0
-        while [ \$n -lt 90 ]; do
-            ip -4 addr show wlan0 2>/dev/null | grep -q 'inet ' && break
-            sleep 1; n=\$((n + 1))
-        done
-        echo "[boot-hook] C: connman restarted (wlan0 wait \${n}s)"
-    fi
-
-    # Network re-apply: only when (a) the user previously hardened the
-    # network module (state has network.applied=1), AND (b) the network is
-    # up. We re-derive the opt-in flags from state so we don't need them in
-    # the boot environment.
-    if [ "\$net_up" = "1" ] && [ -r "\$STATE" ] \\
-        && grep -q '^network.applied=1' "\$STATE"; then
-        # The state file records which risky sub-flags the user enabled.
-        # We export them so the network module's harden entry point will
-        # accept the request at boot.
-        export OYG_NETWORK_BLOCK=1
-        if grep -q '^network.strict=1' "\$STATE"; then
-            export OYG_NETWORK_STRICT=1
-        fi
-        if grep -q '^network.ipblock=1' "\$STATE"; then
-            export OYG_NETWORK_IPBLOCK=1
-        fi
-        if grep -q '^network.dns_override=1' "\$STATE"; then
-            export OYG_DNS_OVERRIDE=1
-        fi
-        if grep -q '^network.dns_resolver=1' "\$STATE"; then
-            export OYG_DNS_RESOLVER=1
-        fi
-        $OYG_DST/oyg harden --only network
-        # The network module's layer 4 (dns.sh start) is idempotent: it
-        # brings the resolver up FIRST and only then bind-mounts
-        # /etc/resolv.conf over it, so there is no window where lookups
-        # fail, and it disarms the auto-revert timer on success. This
-        # hook NEVER signals, reloads or restarts connmand (see the
-        # post-mortem in scripts/dns.sh).
-    fi
-
     # Perms re-apply: only when the user previously hardened the perms
     # module (state has perms.applied=1). perms is purely local — it
     # chmods vendor + webOSbrew code paths — so it does NOT depend on
@@ -344,7 +368,7 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
 } >\$BOOT_LOG 2>&1
 EOF
     chmod 0755 "$INIT_HOOK"
-    log "boot hook installed at $INIT_HOOK (will re-apply capture/mic/voice/logs/remoteone/apps/policy, enforce services.stopped + services.kill, and state-gated: debloat, network, perms when previously applied)"
+    log "boot hook installed at $INIT_HOOK (will re-apply capture/mic/voice/logs/remoteone/apps/policy, enforce services.stopped + services.kill, and state-gated: network (first), launcher, debloat, perms when previously applied)"
 }
 
 main() {

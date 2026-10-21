@@ -1,9 +1,9 @@
 OYG_MOD_DEBLOAT=1
 
-# debloat.sh — opt-in RAM + attack-surface reclamation: stop unused feature
+# debloat.sh — RAM + attack-surface reclamation: stop unused feature
 # units (same shape as services.sh) and bind-neutralise luna-launched
 # preloaded binaries (chmod 000 + mount --bind /dev/null; /usr read-only).
-# OYG_DEBLOAT=1 REQUIRED — harden() refuses without it. Disables features
+# Part of a plain `oyg harden`. Disables features
 # (family/buddy/alwaysready/AI/avahi/ruleengine/voice UI) whose backends
 # are already blocked by network/voice/policy. mask impossible (/etc
 # read-only) → "stop now + stop again every boot". Bugs A/B/C documented
@@ -23,7 +23,21 @@ avahi-daemon|avahi-daemon.service|avahi-daemon
 avahi-adaptor|avahi-adaptor.service|avahi-adaptor
 ruleengine|com.webos.service.ruleengine.service|com.webos.service.ruleengine
 wowplay|wowplay.service|wowplay
+cups-lpd|cups-lpd.socket|
+dmost|dmost.service|dmost
+ninfod|ninfod.service|ninfod
+rdxd|rdxd.service|rdxd
+service-logger|service-logger.service|service-logger
 '
+# Added after the 2026-10-21 audit (F48), none behind a user-visible feature:
+#   cups-lpd.socket  LPD print server listening on the LAN (port 515)
+#   dmost            LG Channels beacons (CDP session IDs, foreground app,
+#                    last channel) sent through sdx
+#   ninfod           answers IPv6 node-information queries (hostname,
+#                    addresses) from any host
+#   rdxd             builds crash and analytics reports for uploadd
+#   service-logger   usage events: foreground app, first-use apps, HDMI
+#                    devices, monthly input list
 
 # --- spec: luna-launched binaries — absolute paths; absent paths are
 # skipped gracefully at runtime. `<path>|<proc>` sets a kill-name override
@@ -34,16 +48,34 @@ DEBLOAT_BINARIES_SPEC='
 /usr/sbin/lg.thinqai.adapter
 /usr/sbin/airessrvallocator
 /usr/sbin/com.webos.service.iotproxy
-/usr/sbin/sportsalert
-/usr/palm/services/com.webos.service.dial/discovery-server.js|ss.gateway
+/usr/sbin/sportsalarm
 /usr/sbin/iconnectivity
 /usr/sbin/uploadd|uploadd
+/usr/sbin/amazon-alexa-adapter
+/usr/sbin/performer
+/usr/sbin/nlpmanager
+/usr/palm/services/com.webos.service.familycare/index.js|cmd:com.webos.service.familycare
+'
+
+# With aggressive services (OYG_AGGRESSIVE=1, or iot-client already in the
+# services module's boot kill list): iot-client is Type=dynamic, so ls-hubd
+# respawns it after every kill; only the bind keeps it down (F48).
+DEBLOAT_BINARIES_AGGRESSIVE_SPEC='
+/usr/palm/services/com.webos.service.iotclient/iot-client
 '
 
 # Per-entry "what feature is lost" — Tier B:
-#   ss.gateway (discovery-server.js|ss.gateway) — DIAL/casting discovery;
-#     the kill-name override matches argv[0]="ss.gateway" (F40b).
 #   iconnectivity — LG phone-pairing / TV Companion helper.
+#   amazon-alexa-adapter — Alexa built-in. Deaf already (voice module), but
+#     it kept a live AVS session and probed every ~28 s (F48).
+#   performer, nlpmanager — leftovers of the voice pipeline.
+#   sportsalarm — sports alerts (the sportsAlarm setting is off, yet it ran).
+#   familycare — runs as `iotjs .../index.js`, so `pidof` never matches;
+#     `cmd:<text>` kills by command line instead.
+#   DIAL is NOT touched: the old entry bound discovery-server.js and killed
+#     ss.gateway, but ss.gateway is LG's shared host for every JS service
+#     (second screen, DIAL, billing, quick cards, ...) and DIAL itself is
+#     served by xinetd, so it disabled nothing and broke more (F48).
 #   /usr/sbin/sdx — DELIBERATELY NOT NEUTRALISED. See the warning below.
 #
 # ---------------------------------------------------------------------------
@@ -71,22 +103,6 @@ DEBLOAT_PROCS_KILL_LIST="$OYG_ROOT/debloat.procs.kill"
 # helpers
 # -----------------------------------------------------------------------------
 
-# _mod_debloat_warn_enabled
-#   Exit 0 iff the OYG_DEBLOAT=1 opt-in flag is set. Otherwise print
-#   a refusal message and exit 1. The same shape as the network
-#   module's opt-in gate (mod_network_harden refuses when
-#   OYG_NETWORK_BLOCK!=1).
-_mod_debloat_warn_enabled() {
-    if [ "${OYG_DEBLOAT:-0}" = "1" ]; then
-        return 0
-    fi
-    warn "debloat: OYG_DEBLOAT!=1 — refusing to disable feature services by default"
-    warn "debloat: set OYG_DEBLOAT=1 oyg harden --only debloat to enable"
-    warn "debloat: this disables: family / buddy / alwaysready / AI inference / avahi / ruleengine / voice UI"
-    warn "debloat: restore with: oyg restore --only debloat"
-    return 1
-}
-
 # _mod_debloat_load_units_spec
 #   Print the units spec as one spec per line, comments and blanks
 #   skipped. Same awk pipeline as services.sh.
@@ -109,7 +125,9 @@ _mod_debloat_load_units_spec() {
 #   argv[0] set to the real service name). The override only affects
 #   the kill step; the bind target is always <absolute-path>.
 _mod_debloat_load_binaries_spec() {
-    printf '%s\n' "$DEBLOAT_BINARIES_SPEC" | awk '
+    spec=$DEBLOAT_BINARIES_SPEC
+    _mod_debloat_aggressive && spec="$spec$DEBLOAT_BINARIES_AGGRESSIVE_SPEC"
+    printf '%s\n' "$spec" | awk '
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*#/ { next }
         { sub(/[[:space:]]+$/, ""); print }
@@ -185,6 +203,15 @@ _mod_debloat_query() {
 _mod_debloat_pids_for() {
     proc=$1
     [ -z "$proc" ] && return 0
+    case "$proc" in
+        cmd:*)
+            pat=${proc#cmd:}
+            for d in /proc/[0-9]*; do
+                [ "${d#/proc/}" = "$$" ] && continue
+                tr '\0' ' ' <"$d/cmdline" 2>/dev/null | grep -q -- "$pat" && printf '%s\n' "${d#/proc/}"
+            done
+            return 0 ;;
+    esac
     if have pidof; then
         pidof "$proc" 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true
         return 0
@@ -416,8 +443,35 @@ _mod_debloat_join_pids() {
 # entry points
 # -----------------------------------------------------------------------------
 
+# _mod_debloat_aggressive — iot-client is only neutralised with aggressive
+# services: the flag now, or iot-client already in the services module's
+# boot kill list (how an earlier OYG_AGGRESSIVE=1 run is remembered).
+_mod_debloat_aggressive() {
+    [ "${OYG_AGGRESSIVE:-0}" = "1" ] && return 0
+    grep -qx 'iot-client' "$OYG_ROOT/services.kill" 2>/dev/null
+}
+
+# _mod_debloat_retire_stale [all] — binaries this module bound that are no
+# longer in the spec (an older spec, or aggressive since turned off; with
+# "all", every one) are unbound and their state forgotten.
+_mod_debloat_retire_stale() {
+    current=""
+    [ "${1:-}" = "all" ] || current=$(_mod_debloat_load_binaries_spec | awk -F'|' '{print $1}')
+    sed -n -E 's/^debloat\.bin\.(.*)\.(prev|bound)=.*/\1/p' "$OYG_STATE" 2>/dev/null | sort -u |
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        printf '%s\n' "$current" | grep -qxF -- "$path" && continue
+        if [ "$(_mod_debloat_is_bound "$path")" = "1" ]; then
+            run umount "$path" 2>/dev/null && ok "debloat: $path no longer targeted — unbound"
+        fi
+        prev=$(state_get "debloat.bin.${path}.prev")
+        [ -n "$prev" ] && [ -e "$path" ] && run chmod "$prev" "$path" 2>/dev/null
+        state_drop "debloat.bin.${path}.prev"
+        state_drop "debloat.bin.${path}.bound"
+    done
+}
+
 mod_debloat_harden() {
-    _mod_debloat_warn_enabled || return 1
     require_root
     ensure_dirs
 
@@ -426,9 +480,6 @@ mod_debloat_harden() {
     if ! have systemctl && [ "$OYG_DRY_RUN" = "1" ]; then
         warn "debloat: systemctl not found — dry-run will simulate unit states (inactive)"
     fi
-
-    warn "debloat: this disables features (family / buddy / AI / avahi / ruleengine / voice UI). Restore with: oyg restore --only debloat"
-    warn "debloat: enforcement is 'stop unit + kill process + bind-neutralise preloaded binaries + re-apply on every boot' (systemctl mask is impossible on this device: read-only /etc)"
 
     rc=0
 
@@ -534,6 +585,7 @@ mod_debloat_harden() {
     done
 
     # --- pass 2: luna-launched binaries (no systemd unit) ---
+    _mod_debloat_retire_stale
     ok_count=0
     fail_count=0
     for spec_line in $(_mod_debloat_load_binaries_spec); do
@@ -686,6 +738,7 @@ mod_debloat_restore() {
         state_drop "debloat.bin.${path}.prev"
     done
 
+    _mod_debloat_retire_stale all
     state_drop "debloat.applied"
     return $rc
 }

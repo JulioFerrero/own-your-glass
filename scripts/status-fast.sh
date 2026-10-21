@@ -42,6 +42,13 @@ count_binds() {  # count mount points matching a path fragment
 
 grp() { printf '%s|HEADER|%s\n' "$1" "$2"; }
 
+# setting <category> <key> — a settingsservice value (~0.04s per call).
+setting() {
+    luna-send -n 1 -w 3000 -f luna://com.webos.settingsservice/getSystemSettings \
+        "{\"category\":\"$1\",\"keys\":[\"$2\"]}" </dev/null 2>/dev/null \
+        | sed -n "s/.*\"$2\": \"\{0,1\}\([a-zA-Z0-9]*\)\"\{0,1\}.*/\1/p" | head -n 1
+}
+
 # ---------------------------------------------------------------- SYSTEM ----
 grp SYSTEM "System"
 printf 'SYSTEM|OK|load %s\n' "$(cut -d' ' -f1-3 /proc/loadavg | tr ' ' ',')"
@@ -74,6 +81,11 @@ else
 fi
 if is_mount /etc/resolv.conf || is_mount /var/lib/misc/resolv.conf; then
     printf 'DNS|OK|query path redirected (resolv.conf override mounted)\n'
+    if [ "$(grep -c '^nameserver' /etc/resolv.conf 2>/dev/null)" = "1" ]; then
+        printf 'DNS|OK|resolv.conf lists only the sink\n'
+    else
+        printf 'DNS|WARN|resolv.conf also lists the upstream — apps that query every server bypass the sink\n'
+    fi
 else
     printf 'DNS|WARN|no resolv.conf override — DNS bypasses the sink\n'
 fi
@@ -104,19 +116,23 @@ done
 
 # --------------------------------------------------------------- DEBLOAT ----
 grp DEBLOAT "Debloat"
-nb=0
-for b in /usr/bin/com.webos.app.voice /usr/sbin/lg.thinqai.adapter /usr/sbin/airessrvallocator \
-         /usr/sbin/iconnectivity /usr/sbin/uploadd /usr/palm/services/com.webos.service.dial/discovery-server.js; do
+# The binary list comes from the installed module, so it cannot drift.
+nb=0; nt=0
+for b in $(sed -n "/^DEBLOAT_BINARIES_SPEC='/,/^'/p" "$OYG_ROOT/modules/debloat.sh" 2>/dev/null \
+           | grep '^/' | cut -d'|' -f1); do
+    [ -e "$b" ] || continue
+    nt=$((nt + 1))
     is_mount "$b" && nb=$((nb + 1))
 done
-printf 'DEBLOAT|%s|%s of 6 neutralised binaries bound\n' "$([ "$nb" -ge 5 ] && echo OK || echo WARN)" "$nb"
-alive=0
-for p in mycar buddyconnector alwaysready ai-inference-manager avahi-daemon ruleengine wowplay uploadd; do
-    [ -n "$(pidof "$p" 2>/dev/null)" ] && alive=$((alive + 1))
+printf 'DEBLOAT|%s|%s of %s neutralised binaries bound\n' "$([ "$nb" -ge "$nt" ] && echo OK || echo WARN)" "$nb" "$nt"
+alive=""
+for p in mycar buddyconnector alwaysready ai-inference-manager avahi-daemon ruleengine wowplay uploadd \
+         dmost rdxd ninfod service-logger amazon-alexa-adapter performer nlpmanager sportsalarm; do
+    [ -n "$(pidof "$p" 2>/dev/null)" ] && alive="$alive $p"
 done
-[ "$alive" -eq 0 ] \
+[ -z "$alive" ] \
     && printf 'DEBLOAT|OK|0 unwanted services running\n' \
-    || printf 'DEBLOAT|WARN|%s unwanted service(s) running\n' "$alive"
+    || printf 'DEBLOAT|WARN|still running:%s\n' "$alive"
 
 # ------------------------------------------------------------------ APPS ----
 grp APPS "Hidden apps"
@@ -125,6 +141,64 @@ if [ -r "$BL" ]; then
     printf 'APPS|OK|%s apps hidden from the launcher\n' "${n:-?}"
 else
     printf 'APPS|FAIL|blocklist not found\n'
+fi
+
+# -------------------------------------------------------------- LAUNCHER ----
+# Live values, not bookkeeping: each luna call takes ~0.04s. The settings
+# list is read from the module so it is defined in one place.
+grp LAUNCHER "Home screen"
+if grep -q '^launcher.applied=1' "$OYG_ROOT/state" 2>/dev/null; then
+    sed -n "/^LAUNCHER_SETTINGS='/,/^'/p" "$OYG_ROOT/modules/launcher.sh" 2>/dev/null | grep ':' |
+    python3 -c '
+import json, subprocess, sys
+def luna(uri, params):
+    try:
+        p = subprocess.Popen(["luna-send", "-n", "1", "-w", "5000", uri, json.dumps(params)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return json.loads(p.communicate(timeout=8)[0] or b"{}")
+    except Exception:
+        return {}
+want = {}
+for l in sys.stdin.read().split():
+    cat, kv = l.split(":", 1)
+    k, v = kv.split("=", 1)
+    want.setdefault(cat, {})[k] = v
+total = good = 0
+for cat, kv in want.items():
+    got = luna("luna://com.webos.settingsservice/getSystemSettings",
+               {"category": cat, "keys": list(kv)}).get("settings", {})
+    for k, v in kv.items():
+        if k in got:
+            total += 1
+            good += got[k] == v
+lvl = "OK" if good == total else "FAIL"
+print("LAUNCHER|%s|%d of %d LG ad and promo settings off" % (lvl, good, total))
+hidden = sys.argv[1].split()
+if hidden:
+    lps = luna("luna://com.webos.service.homelaunchpoints/listLaunchPoints", {}).get("launchPoints", [])
+    back = [p for p in lps if p.get("launchPointId") in hidden]
+    if back:
+        print("LAUNCHER|FAIL|%d of %d pushed apps are back on the app bar" % (len(back), len(hidden)))
+    else:
+        print("LAUNCHER|OK|%d pushed apps hidden from the app bar" % len(hidden))
+' "$(sed -n 's/^launcher.hidden=//p' "$OYG_ROOT/state" 2>/dev/null)"
+else
+    printf 'LAUNCHER|WARN|LG ad settings and pushed apps untouched (Apply hardening handles them)\n'
+fi
+trim=$(sed -n 's/^launcher.trim=//p' "$OYG_ROOT/state" 2>/dev/null)
+if [ -z "$trim" ]; then
+    printf 'LAUNCHER|NA|stock layout (Home screen: Clean sets the wallpaper layout)\n'
+elif ! is_mount /usr/palm/applications/com.webos.app.home/data/flutter_assets/assets/home.xml; then
+    printf 'LAUNCHER|FAIL|clean layout recorded but not in place\n'
+elif [ "$trim" = "wallpaper" ]; then
+    # Anchored: the same pictures are mounted again inside every app jail.
+    imgs=/usr/palm/applications/com.webos.app.home/data/flutter_assets/assets/images
+    n=$(awk -v d="$imgs/" 'index($5, d) == 1 && $5 ~ /bg_banner_img/ { print $5 }' /proc/self/mountinfo 2>/dev/null | sort -u | wc -l)
+    t=$(ls "$imgs"/*/bg_banner_img*.png 2>/dev/null | wc -l)
+    printf 'LAUNCHER|%s|wallpaper layout, apps docked below (%s of %s hero pictures replaced)\n' \
+        "$([ "$n" -ge "$t" ] && [ "$n" -gt 0 ] && echo OK || echo FAIL)" "$n" "$t"
+else
+    printf 'LAUNCHER|OK|clean layout: %s hidden\n' "$trim"
 fi
 
 # ---------------------------------------------------------------- POLICY ----
@@ -138,6 +212,19 @@ if [ -f /var/luna/preferences/webosbrew_block_updates ]; then
     printf 'POLICY|OK|system-update blocker set\n'
 else
     printf 'POLICY|WARN|update blocker missing\n'
+fi
+[ "$(setting option hbbTV)" = "off" ] \
+    && printf 'POLICY|OK|HbbTV red-button apps off\n' \
+    || printf 'POLICY|WARN|HbbTV on (red-button apps load third-party trackers)\n'
+if [ "$(setting network allowMobileDeviceAccess)" = "false" ] && is_mount /etc/xinetd.d/ssg_https; then
+    printf 'POLICY|OK|phone remote control (SSAP, port 3001) off\n'
+else
+    printf 'POLICY|WARN|phone remote control (SSAP, port 3001) reachable from the LAN\n'
+fi
+if [ -e /mnt/lg/cmn_data/admanager/cookie/ad_cookie ]; then
+    is_mount /mnt/lg/cmn_data/admanager/cookie/ad_cookie \
+        && printf 'POLICY|OK|LG ad cookie emptied\n' \
+        || printf 'POLICY|WARN|LG ad cookie in place\n'
 fi
 acc=0
 for f in /mnt/lg/cmn_data/sdp/eula-service/eula.json /mnt/lg/cache/sdp/eula-service/eula.json \

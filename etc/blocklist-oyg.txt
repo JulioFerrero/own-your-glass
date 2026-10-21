@@ -123,6 +123,35 @@ mobile-data.onetrust.io
 googletagmanager.com             # Google Tag Manager — fires on HbbTV broadcaster pages + app webviews
 www.googletagmanager.com
 lgsmartad.com                    # LG ad server (suffix covers es.ad.lgsmartad.com and siblings)
+bidr.io                          # Alphonso's ad-creative CDN (media.bidr.io) — found in the admanager image cache
+doubleverify.com                 # ad-verification beacons — found in the web-app (WAM) cache
+
+# --- 2026-10-21 audit: live capture + on-disk scan (F49) -------------------
+# Mostly third parties loaded by HbbTV red-button pages and system web apps
+# (WAM's AppsOrigins database shows which app contacted which origin).
+fireoscaptiveportal.com          # Alexa SDK connectivity probe, every ~141 s (sibling of avsxappcaptiveportal.com)
+scorecardresearch.com            # comScore beacon.js, loaded by RTVE's HbbTV page
+omtrdc.net                       # Adobe Analytics collection (rtve.d1.sc.omtrdc.net)
+conviva.com                      # Conviva video analytics (cws. / pings.), HbbTV player
+npaw.com                         # NPAW / Youbora video analytics (lma.npaw.com)
+youboranqs01.com                 # Youbora collectors (c15 / c40 / infinity-c33..c41)
+id5-sync.com                     # ID5 identity sync
+mygaru.com                       # myGaru identity sync
+analytics.yahoo.com              # Yahoo ConnectID (not the yahoo.com apex)
+pubmatic.com                     # PubMatic SSP
+openx.net                        # OpenX SSP
+openxcdn.net
+criteo.net                       # Criteo (criteo.com is listed; .net was not)
+googlesyndication.com            # Google ads
+googleadservices.com
+smartclip.net                    # Smartclip apex: cdn. / stats. slipped past the sxp. / hbbtv. entries
+enhanced.live                    # Mediaset addressable HbbTV (container. / usersconsents.)
+enhanced.tools                   # datahub.enhanced.tools
+brightline.tv                    # interactive CTV ads in LG Channels (cdn-media.brightline.tv)
+lgads.tv                         # LG Ad Solutions (www.lgads.tv), referenced by the LG Channels code
+smetrics.3cat.cat                # 3Cat broadcaster analytics (Adobe CNAME) — exact hosts, not 3cat.cat
+audiencies.3cat.cat
+applogs.ccma.cat
 
 # =============================================================================
 # STRICT section — ThinQ / voice / AI / LG control plane.
@@ -160,6 +189,8 @@ eic-gfts.nextlgsdp.com           # SDP EIC-gfts — Engagement Collector First-T
 ngfts.nextlgsdp.com              # SDP ngfts — First-Time-Setup provisioning endpoint (SDP-side counterpart to ngfts.lge.com)
 tv.wiselg.com                    # voice proxy, IoT push, sports, CDP, LG shop, account, buddy
 api.lgtviot.com                  # ThinQ IoT cloud (v3.0)
+lgtviot.com                      # apex: also push.lgtviot.com (sports-alert MQTT push) and ocp.lgtviot.com
+lgsmartplatform.com              # apex: smart-platform telemetry beyond de.emp. (upstream SAFE list)
 wiseconfig.lgtvcommon.com        # WISE smartConfig delivery
 wiseresource.lgtvcommon.com      # WISE resource delivery
 
@@ -178,3 +209,25 @@ lgappstv.com                     # LG app-store + ad delivery (ad.lgappstv.com a
 lgthinq.com                      # ThinQ cloud (common. / connect-client. / he-eu-ai.lgthinq.com)
 lge.com                          # ALL LG corp domains: firmware OTA, telemetry, first-time-setup CDNs
 wiselg.com                       # LG WISE platform: covers eic.tv.wiselg.com (+ voice proxy, account, shop, IoT push)
+
+# --- 2026-10-21 audit: device-cloud endpoints (F48) ------------------------
+# Exact Alexa hosts only: amazonaws.com / amazon.com / amazonvideo.com are
+# shared with Prime Video. The adapter itself is neutralised by debloat.
+alexa.eu.gateway.devices.a2z.com # Alexa (AVS) downchannel, held open all day
+avs-alexa-eu.amazon.com
+c3ju2akw2n2kyh.credentials.iot.us-west-2.amazonaws.com  # Alexa device-certificate login
+a1xx3jgjdgpl39-ats.iot.us-east-1.amazonaws.com
+a1xx3jgjdgpl39-ats.iot.us-west-2.amazonaws.com
+a1xx3jgjdgpl39-ats.iot.eu-west-1.amazonaws.com
+qf56fmtf9e.execute-api.us-east-1.amazonaws.com          # Alexa SDK /prod/metrics
+an5wuzatha.execute-api.us-east-1.amazonaws.com
+uj1m60ida4.execute-api.us-east-1.amazonaws.com
+api.amazonalexa.com
+api.eu.amazonalexa.com
+api.fe.amazonalexa.com
+avs.amazon.dev
+ueiwsp.com                       # UEI QuickSet: connected-device fingerprints (breaks set-top-box auto-detect)
+quicksetcloud.com
+ueiquickset.com
+independa.com                    # Independa senior-care push / video calls
+lggamingportal.com               # LG Gaming Portal
