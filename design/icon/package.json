@@ -1,0 +1,9 @@
+{
+  "name": "own-your-glass-icon",
+  "private": true,
+  "description": "Renders the own-your-glass app icon with three.js in headless Chrome",
+  "dependencies": {
+    "puppeteer-core": "23.5.0",
+    "three": "0.169.0"
+  }
+}

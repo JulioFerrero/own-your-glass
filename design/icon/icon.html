@@ -1,0 +1,318 @@
+<!doctype html>
+<!-- own-your-glass app icon: a parody of LG's face logo whose eye is a laser.
+     A three.js scene: brushed metal disc, chrome G and L, a lens eye, and a
+     beam drawn the way a camera sees one in hazy air. Rendered by build.sh;
+     query params (variant, turn, bx, by, bloom, tm, ...) are tuning knobs. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>own-your-glass icon</title>
+<style>html,body{margin:0;background:#0b0f14}canvas{display:block}</style>
+<script type="importmap">
+{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+try {
+const P = new URLSearchParams(location.search);
+const SIZE = +(P.get('size') || 2048);
+const BEAM = P.get('beam') !== '0';
+const PAL = {
+  black:   { disc: 0x23272e, discRough: 0.36, feature: 0xe8ebee },
+  crimson: { disc: 0x7c1024, discRough: 0.30, feature: 0xeef0f2 },
+}[P.get('variant') || 'crimson'];
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(SIZE, SIZE);
+renderer.toneMapping = { aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, agx: THREE.AgXToneMapping }[P.get('tm') || 'neutral'];
+renderer.toneMappingExposure = +(P.get('exposure') || 1.0);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f14);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.85;
+
+const camera = new THREE.PerspectiveCamera(19.5, 1, 0.1, 100);
+camera.position.set(0, 0, 7.2);
+
+// Seeded PRNG so every render of the same params is identical.
+let seed = 1234567;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+// Lathe-turned brushing. Lathe UVs run u = around, v = along the profile,
+// so rows of this texture become concentric rings on the disc.
+function ringTexture(mean, spread) {
+  const w = 64, h = 2048;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const img = g.createImageData(w, h);
+  const row = new Float32Array(h);
+  for (let y = 0; y < h; y++) row[y] = rnd() - 0.5;
+  for (let k = 0; k < 60; k++) {           // a few deeper tool marks
+    const y0 = Math.floor(rnd() * h), n = 1 + Math.floor(rnd() * 5), a = (rnd() - 0.5) * 1.6;
+    for (let y = y0; y < Math.min(h, y0 + n); y++) row[y] += a;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = Math.max(0, Math.min(1, mean + row[y] * spread));
+    const i = (y * w + x) * 4;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v * 255; img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  t.colorSpace = THREE.NoColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+const emblem = new THREE.Group();
+emblem.rotation.set(-0.10, +(P.get('turn') || -0.24), 0);   // the face looks left, where it fires
+scene.add(emblem);
+
+// --- disc: profile runs bottom of the side wall -> lip -> across the face to
+// the centre, so the lathe's normals point outward and up (toward camera).
+const prof = [[1.03, -0.16], [1.03, -0.04], [1.026, 0.0], [1.018, 0.025], [1.005, 0.045],
+  [0.99, 0.058], [0.97, 0.064], [0.95, 0.057], [0.93, 0.038], [0.915, 0.018], [0.90, 0.004]];
+const pts = prof.map(([r, y]) => new THREE.Vector2(r, y));
+for (let i = 80; i >= 0; i--) pts.push(new THREE.Vector2(0.885 * i / 80, 0));
+const discGeo = new THREE.LatheGeometry(pts, 384);
+discGeo.computeTangents();
+const discMat = new THREE.MeshPhysicalMaterial({
+  color: PAL.disc, metalness: 1.0, roughness: PAL.discRough / 0.85,
+  roughnessMap: ringTexture(0.85, 0.25),
+  bumpMap: ringTexture(0.5, 0.6), bumpScale: 0.9,
+  anisotropy: 0.9, clearcoat: 0.35, clearcoatRoughness: 0.18,
+});
+const disc = new THREE.Mesh(discGeo, discMat);
+disc.rotation.x = Math.PI / 2;
+emblem.add(disc);
+
+// --- G and L, bevelled chrome sitting on the face
+const T = 0.14, R = 0.73, Ro = R + T / 2, Ri = R - T / 2, hb = T / 2, bx = 0.215, a0 = Math.PI / 4;
+const G = new THREE.Shape();
+G.moveTo(Ro * Math.cos(a0), Ro * Math.sin(a0));
+G.absarc(0, 0, Ro, a0, Math.asin(hb / Ro), false);
+G.lineTo(bx, hb);
+G.lineTo(bx, -hb);
+G.lineTo(Math.sqrt(Ri * Ri - hb * hb), -hb);
+G.absarc(0, 0, Ri, -Math.asin(hb / Ri), a0, true);
+G.closePath();
+
+const L = new THREE.Shape();
+L.moveTo(-0.152, 0.56); L.lineTo(-0.012, 0.56); L.lineTo(-0.012, -0.22);
+L.lineTo(0.25, -0.22); L.lineTo(0.25, -0.36); L.lineTo(-0.152, -0.36); L.closePath();
+
+const ext = { depth: 0.06, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.016, bevelSegments: 10, curveSegments: 200 };
+const chrome = new THREE.MeshPhysicalMaterial({
+  color: PAL.feature, metalness: 1.0, roughness: 0.14, clearcoat: 0.5, clearcoatRoughness: 0.08,
+});
+for (const s of [G, L]) emblem.add(new THREE.Mesh(new THREE.ExtrudeGeometry(s, ext), chrome));
+
+// --- the eye: a camera lens with a laser iris
+const EX = -0.36, EY = 0.30;
+const eye = new THREE.Group();
+eye.position.set(EX, EY, 0);
+emblem.add(eye);
+const bezel = new THREE.Mesh(new THREE.TorusGeometry(0.112, 0.024, 48, 160),
+  new THREE.MeshPhysicalMaterial({ color: 0x24272c, metalness: 1.0, roughness: 0.3, clearcoat: 0.6, clearcoatRoughness: 0.15 }));
+bezel.position.z = 0.035;
+eye.add(bezel);
+const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.104, 0.104, 0.05, 128),
+  new THREE.MeshPhysicalMaterial({ color: 0x030304, metalness: 0, roughness: 0.06, clearcoat: 1, clearcoatRoughness: 0.03 }));
+glass.rotation.x = Math.PI / 2;
+glass.position.z = 0.01;
+eye.add(glass);
+const iris = new THREE.Mesh(new THREE.SphereGeometry(0.072, 64, 32),
+  new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff1608, emissiveIntensity: +(P.get('iris') || 6) }));
+iris.scale.z = 0.45;
+iris.position.z = 0.04;
+eye.add(iris);
+const core = new THREE.Mesh(new THREE.SphereGeometry(0.018, 32, 16),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.82, 0.7).multiplyScalar(5) }));
+core.position.z = 0.065;
+eye.add(core);
+// red halo around the eye, drawn additively over everything near it
+const hc = document.createElement('canvas'); hc.width = hc.height = 256;
+const hg = hc.getContext('2d'), grad = hg.createRadialGradient(128, 128, 0, 128, 128, 128);
+grad.addColorStop(0, 'rgba(255,255,255,1)'); grad.addColorStop(0.18, 'rgba(255,255,255,0.55)');
+grad.addColorStop(0.45, 'rgba(255,255,255,0.12)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+hg.fillStyle = grad; hg.fillRect(0, 0, 256, 256);
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(hc),
+  color: new THREE.Color(1.0, 0.07, 0.03).multiplyScalar(+(P.get('halo') || 1.1)),
+  blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+halo.scale.setScalar(0.62);
+halo.position.z = 0.09;
+eye.add(halo);
+const glow = new THREE.PointLight(0xff2210, +(P.get('redlight') || 0.6), 1.1, 2);
+glow.position.set(0, 0, 0.3);
+eye.add(glow);
+
+// --- laser beam, out of the eye toward the lower left and the viewer.
+// A real beam is only visible because the air scatters it: a saturated
+// white-hot core, a red glow that falls off fast, a wide faint haze whose
+// density wanders along the beam, and dust specks catching the light.
+if (BEAM) {
+  const BEAMK = +(P.get('beamk') || 1);
+  const from = new THREE.Vector3(EX, EY, 0.066);
+  const dir = new THREE.Vector3(+(P.get('bx') || -0.5), +(P.get('by') || -0.42), 1.0);
+  const len = 2.6;
+  dir.normalize();
+  emblem.updateMatrixWorld(true);
+  const cam = emblem.worldToLocal(camera.position.clone());
+
+  // Ribbon that faces the camera along its whole length (the camera never
+  // moves, so it is built once here). u runs 0..1 from the lens, v -1..1 across.
+  const SEG = 160, HW = 0.075;
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= SEG; i++) {
+    const a = i / SEG;
+    const p = from.clone().addScaledVector(dir, len * a);
+    const side = new THREE.Vector3().crossVectors(dir, cam.clone().sub(p)).normalize();
+    const hw = HW * (1 + 0.12 * a);                     // slight divergence
+    for (const s of [-1, 1]) {
+      pos.push(p.x + side.x * hw * s, p.y + side.y * hw * s, p.z + side.z * hw * s);
+      uv.push(a, s);
+    }
+    if (i < SEG) idx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
+  }
+  const ribbon = new THREE.BufferGeometry();
+  ribbon.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  ribbon.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  ribbon.setIndex(idx);
+  emblem.add(new THREE.Mesh(ribbon, new THREE.ShaderMaterial({
+    uniforms: {
+      coreCol: { value: new THREE.Color(1.0, 0.72, 0.62).multiplyScalar(22 * BEAMK) },
+      glowCol: { value: new THREE.Color(1.0, 0.05, 0.015).multiplyScalar(4 * BEAMK) },
+    },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `
+      uniform vec3 coreCol; uniform vec3 glowCol; varying vec2 vUv;
+      float hash(float n){ return fract(sin(n) * 43758.5453); }
+      float noise(float x){ float i = floor(x), f = fract(x); return mix(hash(i), hash(i + 1.0), f * f * (3.0 - 2.0 * f)); }
+      void main(){
+        float a = vUv.x, r = abs(vUv.y);
+        float rc = r * (1.0 + 0.12 * a);                 // core keeps its width
+        float core = exp(-pow(rc / 0.07, 2.0));
+        float glow = exp(-pow(r / 0.22, 2.0));
+        float haze = exp(-pow(r / 0.36, 2.0));
+        float dens = 0.35 + 0.65 * noise(a * 26.0) * (0.5 + 0.5 * noise(a * 7.0 + 4.2));
+        float fall = mix(1.0, 0.35, a);                 // energy scattered out
+        float emerge = smoothstep(0.0, 0.02, a);
+        vec3 c = coreCol * core + glowCol * glow * (0.75 + 0.25 * dens) + glowCol * 0.22 * haze * dens;
+        gl_FragColor = vec4(c * fall * emerge, 1.0);
+      }`,
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
+  })));
+
+  // Dust in the beam: gaussian around the axis, brighter the closer it sits.
+  const e1 = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 0, 1)).normalize();
+  const e2 = new THREE.Vector3().crossVectors(dir, e1).normalize();
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-9)) * Math.cos(2 * Math.PI * rnd());
+  const dp = [], dc = [];
+  for (let i = 0; i < 420; i++) {
+    const a = 0.03 + 0.97 * rnd();
+    const sig = 0.04 * (1 + 0.12 * a);
+    const ox = gauss() * sig, oy = gauss() * sig, d2 = (ox * ox + oy * oy) / (sig * sig);
+    const p = from.clone().addScaledVector(dir, len * a).addScaledVector(e1, ox).addScaledVector(e2, oy);
+    const b = Math.exp(-0.5 * d2) * (0.25 + 1.6 * Math.pow(rnd(), 3)) * (1 - 0.55 * a) * 3.2 * BEAMK;
+    dp.push(p.x, p.y, p.z);
+    dc.push(b, b * 0.16, b * 0.1);
+  }
+  const dot = document.createElement('canvas'); dot.width = dot.height = 64;
+  const dg = dot.getContext('2d'), dgr = dg.createRadialGradient(32, 32, 0, 32, 32, 32);
+  dgr.addColorStop(0, 'rgba(255,255,255,1)'); dgr.addColorStop(0.35, 'rgba(255,255,255,0.35)'); dgr.addColorStop(1, 'rgba(255,255,255,0)');
+  dg.fillStyle = dgr; dg.fillRect(0, 0, 64, 64);
+  const dust = new THREE.BufferGeometry();
+  dust.setAttribute('position', new THREE.Float32BufferAttribute(dp, 3));
+  dust.setAttribute('color', new THREE.Float32BufferAttribute(dc, 3));
+  emblem.add(new THREE.Points(dust, new THREE.PointsMaterial({
+    size: 0.018, map: new THREE.CanvasTexture(dot), vertexColors: true,
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false })));
+
+  // Flare where the beam leaves the lens: a soft starburst and a thin
+  // horizontal streak, the way a camera sees a point that bright.
+  const burst = document.createElement('canvas'); burst.width = burst.height = 512;
+  const bg = burst.getContext('2d');
+  bg.translate(256, 256);
+  bg.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < 6; k++) {
+    bg.save();
+    bg.rotate(k * Math.PI / 3 + 0.26);
+    const lg = bg.createLinearGradient(0, 0, 250, 0);
+    lg.addColorStop(0, 'rgba(255,255,255,0.9)'); lg.addColorStop(1, 'rgba(255,255,255,0)');
+    bg.fillStyle = lg;
+    bg.beginPath(); bg.moveTo(0, -3); bg.lineTo(250, 0); bg.lineTo(0, 3); bg.fill();
+    bg.rotate(Math.PI);
+    bg.beginPath(); bg.moveTo(0, -3); bg.lineTo(250, 0); bg.lineTo(0, 3); bg.fill();
+    bg.restore();
+  }
+  const flare = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(burst),
+    color: new THREE.Color(1.0, 0.1, 0.06).multiplyScalar(1.3 * BEAMK),
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+  flare.scale.setScalar(0.6);
+  flare.position.copy(from).setZ(0.1);
+  emblem.add(flare);
+  const streak = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(dot),
+    color: new THREE.Color(1.0, 0.08, 0.05).multiplyScalar(1.8 * BEAMK),
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+  streak.scale.set(1.5, 0.03, 1);
+  streak.position.copy(from).setZ(0.1);
+  emblem.add(streak);
+
+  // The scattered light lands on the metal under the beam.
+  for (const a of [0.04, 0.09, 0.15, 0.22]) {
+    const l = new THREE.PointLight(0xff1a0c, 0.18 * BEAMK, 0.7, 2);
+    l.position.copy(from).addScaledVector(dir, len * a);
+    emblem.add(l);
+  }
+}
+
+const key = new THREE.DirectionalLight(0xffffff, 1.4);
+key.position.set(-3, 4, 5);
+scene.add(key);
+const rimLight = new THREE.DirectionalLight(0xa8b8ff, 0.5);
+rimLight.position.set(4, -2, 3);
+scene.add(rimLight);
+
+// --- post: bloom, tone map, then grain + vignette in display space
+const Grain = {
+  uniforms: { tDiffuse: { value: null }, amount: { value: 0.03 }, size: { value: SIZE } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float amount; uniform float size; varying vec2 vUv;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      c.rgb *= mix(1.0, 0.5, smoothstep(0.38, 0.78, distance(vUv, vec2(0.5))));
+      c.rgb += (h(floor(vUv * size)) - 0.5) * amount;
+      gl_FragColor = c;
+    }`,
+};
+const rt = new THREE.WebGLRenderTarget(SIZE, SIZE, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(SIZE, SIZE), +(P.get('bloom') || 0.55), +(P.get('bloomr') || 0.45), 2.0));
+composer.addPass(new OutputPass());
+composer.addPass(new ShaderPass(Grain));
+composer.render();
+
+window.__png = renderer.domElement.toDataURL('image/png');
+window.__done = true;
+} catch (e) {
+  window.__err = String(e && e.stack || e);
+}
+</script>
+</body>
+</html>
