@@ -308,6 +308,10 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # that the system respawned since boot is killed again.
     if [ -r "\$STATE" ] && grep -q '^debloat.applied=1' "\$STATE"; then
         $OYG_DST/oyg harden --only debloat
+        # LG loads some apps after this hook is done (the Alexa overlay came
+        # up 73 s into one boot), so the background-app pass runs once more.
+        ( sleep 120; echo "[boot-hook] debloat: late pass for background apps"
+          OYG_DEBLOAT_APPS_ONLY=1 $OYG_DST/oyg harden --only debloat ) </dev/null >>\$BOOT_LOG 2>&1 &
     fi
     if [ -r "\$DEBLOAT_STOPPED_LIST" ]; then
         while IFS= read -r svc; do
