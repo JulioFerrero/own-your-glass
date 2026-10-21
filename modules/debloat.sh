@@ -64,6 +64,32 @@ DEBLOAT_BINARIES_AGGRESSIVE_SPEC='
 /usr/palm/services/com.webos.service.iotclient/iot-client
 '
 
+# --- spec: apps LG keeps loaded in the background — <appId>|<how>, where
+# <how> is a comma list:
+#   preload  switched off in LG's preload manager (webos-preload-manager),
+#            which otherwise loads the app again after every close. The
+#            switch lives in memory only, so every boot re-applies it.
+#   close    closed while it sits in the background, never while it is on
+#            screen. Through the web-app manager's killApp: SAM's
+#            closeByAppId answers returnValue:true for amazon.alexapr and
+#            leaves it running, and a killed renderer is back in 2 s (F51).
+# The apps still open normally; the first launch is a little slower.
+DEBLOAT_APPS_SPEC='
+youtube.leanback.v4|preload,close
+com.webos.app.lgchannels|preload,close
+amazon.alexapr|close
+'
+# Measured 2026-10-22 (RSS + swap):
+#   youtube.leanback.v4       60–70 MB, preloaded "semi-full".
+#   com.webos.app.lgchannels  LG Channels (LG's ad-supported channels); its
+#                             preload reserves 100 MB.
+#   amazon.alexapr            the Alexa voice overlay, ~37 MB, loaded at boot
+#                             although the mics and the Alexa adapter are
+#                             already off (voice module, spec above).
+DEBLOAT_SAM_URI=luna://com.webos.applicationManager
+DEBLOAT_WAM_URI=luna://com.palm.webappmanager
+DEBLOAT_PRELOAD_URI=luna://com.webos.service.preloadmanager
+
 # Per-entry "what feature is lost" — Tier B:
 #   iconnectivity — LG phone-pairing / TV Companion helper.
 #   amazon-alexa-adapter — Alexa built-in. Deaf already (voice module), but
@@ -97,6 +123,8 @@ DEBLOAT_PROCS_KILL_LIST="$OYG_ROOT/debloat.procs.kill"
 # Per-binary state keys:
 #   debloat.bin.<path>.prev   — original mode (octal string)
 #   debloat.bin.<path>.bound  — "1" if we bind-mounted /dev/null over it
+#   debloat.preload.<appId>.prev — the app's preload switch before the first
+#                               harden (True/False)
 # debloat.applied                      — "1" once harden completed
 
 # -----------------------------------------------------------------------------
@@ -439,6 +467,130 @@ _mod_debloat_join_pids() {
     printf '%s' "$1" | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 
+# _mod_debloat_load_apps_spec — one <appId>|<how> per line.
+_mod_debloat_load_apps_spec() {
+    printf '%s\n' "$DEBLOAT_APPS_SPEC" | awk 'NF && $1 !~ /^#/ { print $1 }'
+}
+
+# _mod_debloat_apps_snapshot — the foreground app, the running apps and the
+# preload switches, in three luna calls, so the per-app checks need none.
+_mod_debloat_apps_snapshot() {
+    DEBLOAT_FG=$(oyg_luna "$DEBLOAT_SAM_URI/getForegroundAppInfo" '{}' | oyg_json "d.get('appId')")
+    DEBLOAT_RUNNING=$(oyg_luna "$DEBLOAT_SAM_URI/running" '{}' \
+        | oyg_json "[a['id'] for a in d.get('running', [])]")
+    DEBLOAT_PRELOAD=$(oyg_luna "$DEBLOAT_PRELOAD_URI/getPreloadPolicy" '{}' \
+        | oyg_json "['%s %s' % (a.get('id'), a.get('isEnabled')) for a in d.get('applications', [])]")
+}
+
+# _mod_debloat_preload_get <appId> — True/False, empty when the preload
+# manager has no entry for the app. Reads the snapshot.
+_mod_debloat_preload_get() {
+    printf '%s\n' "$DEBLOAT_PRELOAD" | awk -v a="$1" '$1 == a { print $2; exit }'
+}
+
+# _mod_debloat_preload_set <appId> <true|false>
+_mod_debloat_preload_set() {
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: setPreloadPolicy %s isEnabled=%s\n' "$1" "$2"
+        return 0
+    fi
+    oyg_luna "$DEBLOAT_PRELOAD_URI/setPreloadPolicy" \
+        "{\"application\":{\"id\":\"$1\",\"isEnabled\":$2}}" \
+        | oyg_json "d.get('returnValue')" | grep -q True
+}
+
+# _mod_debloat_app_state <appId> — "foreground", "background", or nothing
+# when it is not running. Reads the snapshot.
+_mod_debloat_app_state() {
+    if [ "$DEBLOAT_FG" = "$1" ]; then
+        printf 'foreground'
+    elif printf '%s\n' "$DEBLOAT_RUNNING" | grep -qxF -- "$1"; then
+        printf 'background'
+    fi
+}
+
+# _mod_debloat_app_close <appId> — the web-app manager first (the only
+# route that closes amazon.alexapr), SAM's closeByAppId as the fallback.
+# Takes a fresh snapshot to check.
+_mod_debloat_app_close() {
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: killApp %s\n' "$1"
+        return 0
+    fi
+    oyg_luna "$DEBLOAT_WAM_URI/killApp" "{\"appId\":\"$1\"}" >/dev/null
+    sleep 1
+    _mod_debloat_apps_snapshot
+    [ "$(_mod_debloat_app_state "$1")" = "background" ] || return 0
+    oyg_luna "$DEBLOAT_SAM_URI/closeByAppId" "{\"id\":\"$1\"}" >/dev/null
+    sleep 1
+    _mod_debloat_apps_snapshot
+    [ "$(_mod_debloat_app_state "$1")" != "background" ]
+}
+
+# _mod_debloat_apps_harden — pass 3. Preload off first, so the preload
+# manager cannot load the app straight back after the close.
+_mod_debloat_apps_harden() {
+    arc=0
+    _mod_debloat_apps_snapshot
+    for spec in $(_mod_debloat_load_apps_spec); do
+        app=${spec%%|*}
+        how=${spec#*|}
+        case ",$how," in *,preload,*)
+            cur=$(_mod_debloat_preload_get "$app")
+            if [ -z "$cur" ]; then
+                ok "debloat: $app — not in the preload list"
+            else
+                [ -n "$(state_get "debloat.preload.${app}.prev")" ] \
+                    || state_put "debloat.preload.${app}.prev" "$cur"
+                if [ "$cur" = "False" ]; then
+                    ok "debloat: $app — preload already off"
+                elif _mod_debloat_preload_set "$app" false; then
+                    ok "debloat: $app — preload switched off"
+                else
+                    err "debloat: $app — could not switch its preload off"
+                    arc=1
+                fi
+            fi
+            ;;
+        esac
+        case ",$how," in *,close,*)
+            case "$(_mod_debloat_app_state "$app")" in
+                foreground)
+                    ok "debloat: $app — on screen, left open" ;;
+                background)
+                    if _mod_debloat_app_close "$app"; then
+                        ok "debloat: $app — closed (it was loaded in the background)"
+                    else
+                        err "debloat: $app — still loaded after killApp and closeByAppId"
+                        arc=1
+                    fi ;;
+                *)
+                    ok "debloat: $app — not loaded" ;;
+            esac
+            ;;
+        esac
+    done
+    return $arc
+}
+
+# _mod_debloat_apps_restore — preload switches back to what they were.
+# Closed apps are not reopened: LG loads them again when it wants them.
+_mod_debloat_apps_restore() {
+    for spec in $(_mod_debloat_load_apps_spec); do
+        app=${spec%%|*}
+        prev=$(state_get "debloat.preload.${app}.prev")
+        [ -n "$prev" ] || continue
+        v=false
+        [ "$prev" = "True" ] && v=true
+        if _mod_debloat_preload_set "$app" "$v"; then
+            ok "debloat: $app — preload set back to $v"
+        else
+            warn "debloat: $app — could not set its preload back to $v (the next boot resets it)"
+        fi
+        state_drop "debloat.preload.${app}.prev"
+    done
+}
+
 # -----------------------------------------------------------------------------
 # entry points
 # -----------------------------------------------------------------------------
@@ -479,6 +631,12 @@ mod_debloat_harden() {
         || { err "debloat: systemctl not found"; return 1; }
     if ! have systemctl && [ "$OYG_DRY_RUN" = "1" ]; then
         warn "debloat: systemctl not found — dry-run will simulate unit states (inactive)"
+    fi
+
+    # The boot hook's late pass, for apps LG loads after the hook is done.
+    if [ "${OYG_DEBLOAT_APPS_ONLY:-0}" = "1" ]; then
+        _mod_debloat_apps_harden
+        return $?
     fi
 
     rc=0
@@ -633,6 +791,9 @@ mod_debloat_harden() {
         fi
     done
 
+    # --- pass 3: apps LG keeps loaded in the background ---
+    _mod_debloat_apps_harden || rc=1
+
     state_put "debloat.applied" "1"
     return $rc
 }
@@ -739,6 +900,7 @@ mod_debloat_restore() {
     done
 
     _mod_debloat_retire_stale all
+    _mod_debloat_apps_restore
     state_drop "debloat.applied"
     return $rc
 }
@@ -835,6 +997,29 @@ mod_debloat_status() {
         else
             print_status FAIL "$name ($path) NOT bound to /dev/null — preload live"
         fi
+    done
+
+    # --- background apps ---
+    _mod_debloat_apps_snapshot
+    for spec in $(_mod_debloat_load_apps_spec); do
+        app=${spec%%|*}
+        how=${spec#*|}
+        case ",$how," in *,preload,*)
+            case "$(_mod_debloat_preload_get "$app")" in
+                False) print_status OK "$app: preload off" ;;
+                True)  print_status FAIL "$app: preload on — LG loads it again after every close" ;;
+                *)     print_status N/A "$app: not in the preload list" ;;
+            esac
+            ;;
+        esac
+        case ",$how," in *,close,*)
+            case "$(_mod_debloat_app_state "$app")" in
+                background) print_status FAIL "$app: loaded in the background" ;;
+                foreground) print_status OK "$app: on screen (in use)" ;;
+                *)          print_status OK "$app: not loaded" ;;
+            esac
+            ;;
+        esac
     done
 
     if [ "$disabled_count" -gt 0 ]; then

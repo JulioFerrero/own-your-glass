@@ -133,6 +133,38 @@ done
 [ -z "$alive" ] \
     && printf 'DEBLOAT|OK|0 unwanted services running\n' \
     || printf 'DEBLOAT|WARN|still running:%s\n' "$alive"
+# Background apps, also read from the installed module: none loaded behind
+# what is on screen, and LG's preload off for the ones marked "preload".
+sed -n "/^DEBLOAT_APPS_SPEC='/,/^'/p" "$OYG_ROOT/modules/debloat.sh" 2>/dev/null | grep '|' |
+python3 -c '
+import json, subprocess, sys
+def luna(uri):
+    try:
+        p = subprocess.Popen(["luna-send", "-n", "1", "-w", "5000", uri, "{}"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return json.loads(p.communicate(timeout=8)[0] or b"{}")
+    except Exception:
+        return {}
+spec = [l.split("|", 1) for l in sys.stdin.read().split()]
+if not spec:
+    sys.exit(0)
+fg = luna("luna://com.webos.applicationManager/getForegroundAppInfo").get("appId")
+running = {a.get("id") for a in luna("luna://com.webos.applicationManager/running").get("running", [])}
+pre = {a.get("id"): a.get("isEnabled")
+       for a in luna("luna://com.webos.service.preloadmanager/getPreloadPolicy").get("applications", [])}
+loaded = [a for a, how in spec if "close" in how.split(",") and a in running and a != fg]
+want = [a for a, how in spec if "preload" in how.split(",") and a in pre]
+on = [a for a in want if pre[a]]
+if loaded:
+    print("DEBLOAT|WARN|loaded in the background: " + " ".join(loaded))
+else:
+    print("DEBLOAT|OK|0 unwanted apps loaded in the background")
+if want:
+    if on:
+        print("DEBLOAT|WARN|LG preload still on: " + " ".join(on))
+    else:
+        print("DEBLOAT|OK|LG preload off for %d of %d apps" % (len(want), len(want)))
+'
 
 # ------------------------------------------------------------------ APPS ----
 grp APPS "Hidden apps"
