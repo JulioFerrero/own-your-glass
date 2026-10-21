@@ -46,6 +46,49 @@ run() {
     "$@"
 }
 
+# oyg_luna <uri> <json> — one reply on stdout. stdin is closed: over a
+# non-interactive shell luna-send otherwise prints nothing.
+oyg_luna() {
+    luna-send -n 1 -w 10000 -f "$1" "$2" </dev/null 2>/dev/null
+}
+
+# oyg_json <expr> — evaluate a Python expression over the JSON reply on
+# stdin (bound to d; json is imported). Lists print one item per line.
+oyg_json() {
+    python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+r = eval(sys.argv[1])
+if isinstance(r, (list, tuple)):
+    print("\n".join(str(x) for x in r))
+elif r is not None:
+    print(r)
+' "$1"
+}
+
+# oyg_setting_get <category> <key> — the value from settingsservice;
+# booleans print as true/false. Empty if the key is not on this firmware.
+oyg_setting_get() {
+    oyg_luna luna://com.webos.settingsservice/getSystemSettings \
+        "{\"category\":\"$1\",\"keys\":[\"$2\"]}" \
+        | oyg_json "(lambda v: v if v is None or isinstance(v, str) else json.dumps(v))(d.get('settings', {}).get('$2'))"
+}
+
+# oyg_setting_set <category> <key> <value> — true/false are sent as JSON
+# booleans, anything else as a string.
+oyg_setting_set() {
+    case "$3" in
+        true|false) v=$3 ;;
+        *) v="\"$3\"" ;;
+    esac
+    oyg_luna luna://com.webos.settingsservice/setSystemSettings \
+        "{\"category\":\"$1\",\"settings\":{\"$2\":$v}}" \
+        | oyg_json "d.get('returnValue')" | grep -q True
+}
+
 state_put() {
     key=$1; shift
     [ "$OYG_DRY_RUN" = "1" ] && {
