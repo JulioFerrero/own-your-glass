@@ -61,7 +61,7 @@ Available modules:
   debloat    opt-in (OYG_DEBLOAT=1) — stop+kill unused feature services; bind-neutralise preloaded voice-app binary
   mic        mute capture gain (where permitted)
   logs       periodic clear of /tmp/var/log/messages and /tmp/app.voice.log
-  network    four-layer mitigation (see README "Network module" section) — layer 1 emits dual-stack (IPv4 + IPv6) hosts-file sinkholes; layer 4 (opt-in OYG_DNS_RESOLVER=1) installs an on-device sinkhole resolver on 127.0.0.2:53 and bind-mounts /etc/resolv.conf over it (no connmand interaction; auto-revert timer on apply)
+  network    four-layer mitigation (see docs/DOCUMENTATION.md, "Network module") — layer 1 emits dual-stack (IPv4 + IPv6) hosts-file sinkholes; layer 4 (opt-in OYG_DNS_RESOLVER=1) installs an on-device sinkhole resolver on 127.0.0.2:53 and bind-mounts /etc/resolv.conf over it (no connmand interaction; auto-revert timer on apply)
   perms      chmod webOSbrew hbchannel + Google Home runtime (aggressive)
   remoteone  verify vendor remote-support gate absence
 

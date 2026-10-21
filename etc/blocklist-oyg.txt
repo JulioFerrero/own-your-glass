@@ -80,7 +80,7 @@ snu-dev.lge.com
 # and 853 therefore cannot be filtered. Sinkholing the provider HOSTNAMES is
 # the only on-device lever: any resolver that looks one of these up gets
 # 0.0.0.0/::1 and fails. A client using a HARDCODED DoH IP still bypasses this;
-# close that at the router instead (see README, "Router-level enforcement").
+# close that at the router instead (see docs/DOCUMENTATION.md, "Router-level enforcement").
 dns.google                       # Google DoH/DoT
 dns.google.com
 cloudflare-dns.com               # Cloudflare DoH/DoT
