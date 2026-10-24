@@ -68,14 +68,15 @@ mod_logs_harden() {
     state_put "logs.watcher" "$WATCH_SCRIPT_DST"
     state_put "logs.interval" "$LOG_INTERVAL"
     state_put "logs.applied" "1"
+    oyg_watcher_start "$WATCH_SCRIPT_DST" || warn "logs: watcher did not start"
     warn "logs: this is DAMAGE LIMITATION — transcription happens before we can intervene"
 }
 
 mod_logs_restore() {
+    oyg_watcher_stop "$WATCH_SCRIPT_DST"
     state_drop "logs.watcher"
     state_drop "logs.interval"
     state_drop "logs.applied"
-    ok "logs: watcher stop requested (kill it manually if needed)"
 }
 
 mod_logs_status() {
