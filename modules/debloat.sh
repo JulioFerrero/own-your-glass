@@ -117,6 +117,7 @@ DEBLOAT_PRELOAD_URI=luna://com.webos.service.preloadmanager
 #     binary on the next luna-send; only the bind stops it — the re-exec'd
 #     process opens /dev/null and exits (F40c).
 
+DEBLOAT_WAKE_WATCHER="$OYG_ROOT/scripts/watch-wake.sh"
 DEBLOAT_UNITS_STOPPED_LIST="$OYG_ROOT/debloat.units.stopped"
 DEBLOAT_PROCS_KILL_LIST="$OYG_ROOT/debloat.procs.kill"
 
@@ -635,6 +636,11 @@ mod_debloat_harden() {
 
     # The boot hook's late pass, for apps LG loads after the hook is done.
     if [ "${OYG_DEBLOAT_APPS_ONLY:-0}" = "1" ]; then
+        # Checked under the run lock, so a wake during 'oyg restore' cannot re-apply.
+        if [ "$(state_get "debloat.applied")" != "1" ]; then
+            ok "debloat: not applied — background-app pass skipped"
+            return 0
+        fi
         _mod_debloat_apps_harden
         return $?
     fi
@@ -795,11 +801,13 @@ mod_debloat_harden() {
     _mod_debloat_apps_harden || rc=1
 
     state_put "debloat.applied" "1"
+    oyg_watcher_start "$DEBLOAT_WAKE_WATCHER" || warn "debloat: wake watcher did not start"
     return $rc
 }
 
 mod_debloat_restore() {
     require_root
+    oyg_watcher_stop "$DEBLOAT_WAKE_WATCHER"
 
     rc=0
 

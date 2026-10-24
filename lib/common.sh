@@ -122,6 +122,68 @@ state_drop() {
 }
 
 
+# oyg_watcher_alive <script> — its pidfile names a live process running <script>
+# (the argv check keeps a reused pid from counting).
+oyg_watcher_alive() {
+    _w_pid=$(cat "$OYG_WATCHERS/$(basename "$1" .sh).pid" 2>/dev/null) || return 1
+    [ -n "$_w_pid" ] && kill -0 "$_w_pid" 2>/dev/null || return 1
+    tr '\0' '\n' <"/proc/$_w_pid/cmdline" 2>/dev/null | grep -qxF -- "$1"
+}
+
+# oyg_watcher_start <script> — start <script> in the background unless running.
+oyg_watcher_start() {
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: start watcher %s\n' "$1"
+        return 0
+    fi
+    [ -r "$1" ] || { warn "watcher missing: $1"; return 1; }
+    oyg_watcher_alive "$1" && return 0
+    mkdir -p "$OYG_WATCHERS" || return 1
+    nohup sh "$1" </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$!" >"$OYG_WATCHERS/$(basename "$1" .sh).pid"
+    ok "watcher started: $1 (pid $!)"
+}
+
+# oyg_watcher_stop <script> — TERM the running copy and drop its pidfile.
+oyg_watcher_stop() {
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: stop watcher %s\n' "$1"
+        return 0
+    fi
+    _w_pidfile="$OYG_WATCHERS/$(basename "$1" .sh).pid"
+    if oyg_watcher_alive "$1"; then
+        kill -TERM "$_w_pid" 2>/dev/null
+        _w_n=0
+        while [ "$_w_n" -lt 10 ] && kill -0 "$_w_pid" 2>/dev/null; do
+            sleep 1
+            _w_n=$((_w_n + 1))
+        done
+        ok "watcher stopped: $1"
+    fi
+    rm -f "$_w_pidfile"
+}
+
+# oyg_run_lock — serialise harden/restore runs (boot hook, panel, watchers).
+# mkdir is atomic; a lock whose holder has died is taken over.
+OYG_RUN_LOCK="$OYG_ROOT/run.lock"
+oyg_run_lock() {
+    _w_n=0
+    while ! mkdir "$OYG_RUN_LOCK" 2>/dev/null; do
+        _w_holder=$(cat "$OYG_RUN_LOCK/pid" 2>/dev/null)
+        # No pid after 5 s means the holder died between mkdir and writing it.
+        if { [ -n "$_w_holder" ] && ! kill -0 "$_w_holder" 2>/dev/null; } \
+            || { [ -z "$_w_holder" ] && [ "$_w_n" -ge 5 ]; }; then
+            rm -rf "$OYG_RUN_LOCK"
+            continue
+        fi
+        _w_n=$((_w_n + 1))
+        [ "$_w_n" -ge 600 ] && { err "another oyg run still holds $OYG_RUN_LOCK"; return 1; }
+        sleep 1
+    done
+    printf '%s\n' "$$" >"$OYG_RUN_LOCK/pid"
+    trap 'rm -rf "$OYG_RUN_LOCK"' EXIT
+}
+
 trim() {
     printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
