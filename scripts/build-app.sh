@@ -38,17 +38,6 @@ trap 'rm -rf "$WORK"' EXIT
 COPYFILE_DISABLE=1
 export COPYFILE_DISABLE
 
-# --- control ---
-mkdir -p "$WORK/control"
-cat > "$WORK/control/control" <<EOF
-Package: $ID
-Version: $VER
-Architecture: all
-Maintainer: own-your-glass
-Description: own-your-glass control panel
-EOF
-( cd "$WORK/control" && tar czf "$WORK/control.tar.gz" ./control )
-
 # --- data ---
 PAYLOAD="$WORK/data/usr/palm/applications/$ID"
 mkdir -p "$PAYLOAD"
@@ -68,7 +57,35 @@ done
 find "$TOOLKIT" -name '._*' -delete 2>/dev/null
 find "$TOOLKIT" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
 echo "bundled toolkit: $(find "$TOOLKIT" -type f | wc -l | tr -d ' ') files"
-( cd "$WORK/data" && tar czf "$WORK/data.tar.gz" . )
+
+# Package metadata, as ares-package writes it. The TV installs without it,
+# but the webosbrew store's checker reads the app id from here.
+mkdir -p "$WORK/data/usr/palm/packages/$ID"
+printf '{\n  "id": "%s",\n  "version": "%s",\n  "app": "%s",\n  "services": []\n}\n' \
+    "$ID" "$VER" "$ID" > "$WORK/data/usr/palm/packages/$ID/packageinfo.json"
+
+# Member names without a leading ./ (usr/palm/..., control): the webosbrew
+# store opens them by exact name.
+( cd "$WORK/data" && tar czf "$WORK/data.tar.gz" usr )
+
+# --- control ---
+# The same fields ares-package writes. The store's checker flags a package
+# without Installed-Size and the two webOS-* fields as assembled by hand.
+SIZE=$(find "$WORK/data" -type f -exec cat {} + | wc -c | tr -d ' ')
+mkdir -p "$WORK/control"
+cat > "$WORK/control/control" <<EOF
+Package: $ID
+Version: $VER
+Section: misc
+Priority: optional
+Architecture: all
+Installed-Size: $SIZE
+Maintainer: own-your-glass
+Description: own-your-glass control panel
+webOS-Package-Format-Version: 2
+webOS-Packager-Version: own-your-glass build-app.sh
+EOF
+( cd "$WORK/control" && tar czf "$WORK/control.tar.gz" control )
 
 printf '2.0\n' > "$WORK/debian-binary"
 
@@ -91,7 +108,7 @@ with open(out, "wb") as fh:
         name = os.path.basename(path)
         if len(name) > 15:
             raise SystemExit("app: member name too long for ar: %s" % name)
-        hdr = (name + "/").ljust(16)          # GNU-style name terminator
+        hdr = name.ljust(16)                  # Debian-style: no "/" terminator, the store reads exact names
         hdr += "0".ljust(12)                  # mtime
         hdr += "0".ljust(6)                   # uid
         hdr += "0".ljust(6)                   # gid
