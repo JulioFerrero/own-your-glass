@@ -165,6 +165,9 @@ run_modules() {
         require_root
     fi
     ensure_dirs
+    if { [ "$action" = "harden" ] || [ "$action" = "restore" ]; } && [ "$dry" != "1" ]; then
+        oyg_run_lock || exit 1
+    fi
 
     mods=$(all_modules)
     if [ -n "$only" ]; then

@@ -22,6 +22,7 @@ stop_watchers() {
     log "asking any running watchers to exit"
     pkill -f "$OYG_DST/watch-capture.sh" 2>/dev/null || true
     pkill -f "$OYG_DST/watch-logs.sh"   2>/dev/null || true
+    pkill -f "$OYG_DST/scripts/watch-wake.sh" 2>/dev/null || true
     pkill -f "$OYG_DST/watchers"        2>/dev/null || true
 }
 
