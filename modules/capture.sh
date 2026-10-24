@@ -82,7 +82,7 @@ mod_capture_harden() {
         strategy="chmod+watcher"
         mod_capture_install_watcher || warn "capture: watcher install failed"
         state_put "capture.watcher" "$WATCH_SCRIPT_DST"
-        ok "capture: watcher installed at $WATCH_SCRIPT_DST (boot hook will spawn it)"
+        oyg_watcher_start "$WATCH_SCRIPT_DST" || warn "capture: watcher did not start"
     fi
 
     if [ -e "$VTCAP_BIN" ]; then
@@ -132,6 +132,8 @@ mod_capture_harden() {
 
 mod_capture_restore() {
     require_root
+    # Stop it first, or it re-tightens the file within 3 s of the restore.
+    oyg_watcher_stop "$WATCH_SCRIPT_DST"
     strategy=$(state_get "capture.strategy")
     orig=$(state_get "capture.file.mode.orig")
     if [ -n "$orig" ] && [ -e "$CAPTURE_PATH" ]; then

@@ -365,7 +365,11 @@ it is loaded behind the one on screen, through the web-app manager's
 leaves it running, and a killed renderer is back within 2 s. The preload
 switch is held in memory, so the boot hook re-applies it, and it runs this
 pass once more two minutes after the hook (`OYG_DEBLOAT_APPS_ONLY=1`) for
-apps LG loads late. Restore sets the preload switches back; closed apps
+apps LG loads late. A remote power-off suspends the TV instead of
+rebooting it, and LG resumes with the preload switched back on, so
+`scripts/watch-wake.sh` (started by `harden`, stopped by `restore`)
+follows the tvpower state and runs the same pass on every return to
+`Active`. Restore sets the preload switches back; closed apps
 are not reopened, LG loads them again when it wants them.
 
 **Measured on this device (Tier A + Tier B applied):**
@@ -984,6 +988,7 @@ own-your-glass/
 ├── scripts/dnssink.py             on-device DNS sinkhole resolver (stdlib only) — UDP + TCP on 127.0.0.2:53, suffix-matches /var/lib/own-your-glass/hosts
 ├── scripts/dns.sh                 operator entry point: start|apply|ensure|confirm|revert|stop|status|log|test — hooks the resolver in via a /etc/resolv.conf bind-mount (never touches ConnMan; auto-revert timer on apply)
 ├── scripts/watch-dns.sh           watchdog: re-asserts the resolv.conf override, restarts the resolver on death, reverts the override if it cannot come back
+├── scripts/watch-wake.sh          re-runs the debloat background-app pass each time the TV wakes from standby
 ├── scripts/build-app.sh          package app/ (with a bundled copy of the toolkit) into an installable .ipk
 ├── app/                          the control panel: a webOS app that runs the toolkit from the remote
 ├── design/icon/                  three.js source for the app icon and the README logo (build.sh renders them)
@@ -1043,7 +1048,9 @@ At boot the hook:
    that hangs cannot hold up the rest of the hook. The `capture` re-apply also re-establishes
    the bind-mount on `/usr/bin/vtCaptureTestSuite`, since
    `mount --bind` does not survive a reboot — and re-tightens
-   `/tmp/capture.rgb` via the watcher. The `voice` re-apply
+   `/tmp/capture.rgb` via the watcher. `capture`, `logs` and `debloat`
+   start their watchers when they harden (one copy each, tracked by a
+   pid file in `watchers/`) and stop them when they restore. The `voice` re-apply
    re-establishes the bind-mounts over the Magic Remote mic
    pipeline binaries (`voiceinput_hidraw`, `voiceinput`,
    `voiceconductor`); `/dev/hidraw0` is deliberately untouched
