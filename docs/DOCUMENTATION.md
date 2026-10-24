@@ -349,8 +349,9 @@ boot-time re-apply record so they stay down across reboots:
 
 The binary spec format supports an optional kill-name override
 (`<path>|<proc>`) for cases where the process basename differs from the
-file basename (`uploadd`), and `<path>|cmd:<text>` to kill by command
-line when no process name matches (familycare under `iotjs`). Bind
+file basename (`uploadd`), and `<path>|cmd:<exe>:<text>` to kill the
+`<exe>` process that has `<text>` (or a path through it) as an argument,
+when no process name matches (familycare under `iotjs`). Bind
 target is always the file path; the override only affects the kill
 step. Entries that leave the spec (an older spec, or aggressive services
 turned off) are unbound and forgotten on the next apply.
