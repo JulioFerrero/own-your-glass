@@ -302,7 +302,7 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # module (state has debloat.applied=1). Unlike the network module,
     # this does NOT depend on the network being up — debloat is purely
     # local process + bind-mount work. Gated on state rather than run on
-    # every boot so that `oyg restore` (Undo hardening) stays undone after a
+    # every boot so that 'oyg restore' (Undo hardening) stays undone after a
     # reboot. We also re-enforce the persisted debloat.units.stopped + debloat.procs.kill
     # lists using the same TERM/KILL pattern as services, so any process
     # that the system respawned since boot is killed again.

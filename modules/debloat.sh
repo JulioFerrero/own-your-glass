@@ -54,7 +54,7 @@ DEBLOAT_BINARIES_SPEC='
 /usr/sbin/amazon-alexa-adapter
 /usr/sbin/performer
 /usr/sbin/nlpmanager
-/usr/palm/services/com.webos.service.familycare/index.js|cmd:com.webos.service.familycare
+/usr/palm/services/com.webos.service.familycare/index.js|cmd:iotjs:com.webos.service.familycare
 '
 
 # With aggressive services (OYG_AGGRESSIVE=1, or iot-client already in the
@@ -97,7 +97,7 @@ DEBLOAT_PRELOAD_URI=luna://com.webos.service.preloadmanager
 #   performer, nlpmanager — leftovers of the voice pipeline.
 #   sportsalarm — sports alerts (the sportsAlarm setting is off, yet it ran).
 #   familycare — runs as `iotjs .../index.js`, so `pidof` never matches;
-#     `cmd:<text>` kills by command line instead.
+#     `cmd:iotjs:<text>` kills the iotjs process running it instead.
 #   DIAL is NOT touched: the old entry bound discovery-server.js and killed
 #     ss.gateway, but ss.gateway is LG's shared host for every JS service
 #     (second screen, DIAL, billing, quick cards, ...) and DIAL itself is
@@ -223,20 +223,40 @@ _mod_debloat_query() {
     fi
 }
 
+# _mod_debloat_argv_matches <cmdline-file> <exe> <text>
+#   True when argv[0]'s basename is <exe> and a later argument is <text> or a
+#   path through it. Literal case patterns, so <text> needs no escaping.
+_mod_debloat_argv_matches() {
+    tr '\0' '\n' <"$1" 2>/dev/null | {
+        IFS= read -r argv0 || exit 1
+        [ "${argv0##*/}" = "$2" ] || exit 1
+        while IFS= read -r arg; do
+            case "$arg" in
+                "$3" | "$3"/* | */"$3" | */"$3"/*) exit 0 ;;
+            esac
+        done
+        exit 1
+    }
+}
+
 # _mod_debloat_pids_for <process>
 #   Print PIDs of <process> (basename match), one per line. Empty if
 #   none. Prefers pidof, falls back to pgrep -x. Returns empty for an
 #   empty <process> (familycare has no matching basename; per the brief
-#   we treat a missing process as normal).
+#   we treat a missing process as normal). cmd:<exe>:<text> matches by
+#   program and argument instead (see _mod_debloat_argv_matches).
 _mod_debloat_pids_for() {
     proc=$1
     [ -z "$proc" ] && return 0
     case "$proc" in
         cmd:*)
-            pat=${proc#cmd:}
+            spec=${proc#cmd:}
+            exe=${spec%%:*}
+            text=${spec#*:}
             for d in /proc/[0-9]*; do
                 [ "${d#/proc/}" = "$$" ] && continue
-                tr '\0' ' ' <"$d/cmdline" 2>/dev/null | grep -q -- "$pat" && printf '%s\n' "${d#/proc/}"
+                _mod_debloat_argv_matches "$d/cmdline" "$exe" "$text" \
+                    && printf '%s\n' "${d#/proc/}"
             done
             return 0 ;;
     esac
