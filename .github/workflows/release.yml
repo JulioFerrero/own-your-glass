@@ -1,0 +1,35 @@
+# Publish a release when a version tag is pushed: build the app with
+# scripts/build-app.sh and attach the ipk and its Homebrew Channel manifest,
+# which the webosbrew app store reads. Tag as v<version in app/appinfo.json>.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        env:
+          OYG_REPO: ${{ github.repository }}
+        run: |
+          ver=$(python3 -c 'import json; print(json.load(open("app/appinfo.json"))["version"])')
+          if [ "v$ver" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match app/appinfo.json version $ver"
+            exit 1
+          fi
+          sh scripts/build-app.sh
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.ipk dist/*.manifest.json \
+            --title "$GITHUB_REF_NAME" --generate-notes

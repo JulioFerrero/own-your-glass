@@ -62,7 +62,7 @@ mkdir -p "$TOOLKIT"
 for d in modules scripts lib etc; do
     [ -d "$REPO/$d" ] && cp -R "$REPO/$d" "$TOOLKIT"/
 done
-for f in oyg install.sh uninstall.sh LICENSE README.md; do
+for f in oyg install.sh uninstall.sh LICENSE NOTICE README.md; do
     [ -f "$REPO/$f" ] && cp "$REPO/$f" "$TOOLKIT"/
 done
 find "$TOOLKIT" -name '._*' -delete 2>/dev/null
@@ -119,7 +119,37 @@ while off + 60 <= len(data):
 print("members:", ", ".join("%s(%d)" % n for n in names))
 PYEOF
 
+SHA=$(shasum -a 256 "$OUT" | awk '{print $1}')
+
+# --- Homebrew Channel manifest ---
+# What the webosbrew app store reads. It is published as a release asset
+# under a fixed name (releases/latest/download/<appId>.manifest.json), so the
+# store follows new releases without a change on its side; the ipk URL names
+# the version, so the hash always matches the file it points at.
+REPO_URL=https://github.com/${OYG_REPO:-JulioFerrero/own-your-glass}
+python3 - "$SRC/appinfo.json" "$DIST/$ID.manifest.json" "$REPO_URL" "$(basename "$OUT")" "$SHA" <<'PYEOF'
+import json, sys
+appinfo, out, repo, ipk, sha = sys.argv[1:]
+info = json.load(open(appinfo))
+manifest = {
+    "id": info["id"],
+    "version": info["version"],
+    "type": info["type"],
+    "title": info["title"],
+    "appDescription": "Hardens a rooted LG webOS TV: microphones, screen capture, ads, telemetry and ACR.",
+    "iconUri": "https://raw.githubusercontent.com/%s/main/app/largeIcon.png" % repo.split("github.com/")[1],
+    "sourceUrl": repo,
+    "rootRequired": True,
+    "ipkUrl": "%s/releases/download/v%s/%s" % (repo, info["version"], ipk),
+    "ipkHash": {"sha256": sha},
+}
+with open(out, "w") as fh:
+    json.dump(manifest, fh, indent=2)
+    fh.write("\n")
+PYEOF
+
 echo "built:  $OUT"
 echo "size:   $(wc -c < "$OUT" | tr -d ' ') bytes"
-echo "sha256: $(shasum -a 256 "$OUT" | awk '{print $1}')"
+echo "sha256: $SHA"
 echo "appId:  $ID"
+echo "manifest: $DIST/$ID.manifest.json"

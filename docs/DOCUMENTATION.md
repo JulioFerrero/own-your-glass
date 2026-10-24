@@ -990,7 +990,8 @@ own-your-glass/
 ├── scripts/dns.sh                 operator entry point: start|apply|ensure|confirm|revert|stop|status|log|test — hooks the resolver in via a /etc/resolv.conf bind-mount (never touches ConnMan; auto-revert timer on apply)
 ├── scripts/watch-dns.sh           watchdog: re-asserts the resolv.conf override, restarts the resolver on death, reverts the override if it cannot come back
 ├── scripts/watch-wake.sh          re-runs the debloat background-app pass each time the TV wakes from standby
-├── scripts/build-app.sh          package app/ (with a bundled copy of the toolkit) into an installable .ipk
+├── scripts/build-app.sh          package app/ (with a bundled copy of the toolkit) into an installable .ipk, plus its Homebrew Channel manifest
+├── .github/workflows/release.yml  on a v<version> tag: build the app and publish the ipk and manifest as a GitHub release
 ├── app/                          the control panel: a webOS app that runs the toolkit from the remote
 ├── design/icon/                  three.js source for the app icon and the README logo (build.sh renders them)
 ├── docs/DOCUMENTATION.md         this file

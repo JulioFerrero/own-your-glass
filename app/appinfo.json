@@ -4,7 +4,7 @@
   "main": "index.html",
   "title": "own-your-glass",
   "vendor": "own-your-glass",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "icon": "icon.png",
   "largeIcon": "largeIcon.png",
   "bgColor": "#0b0f14",
@@ -14,7 +14,7 @@
   "handlesRelaunch": true,
   "disableBackHistoryAPI": true,
   "supportQuickStart": true,
-  "inspectable": true,
+  "inspectable": false,
   "requiredPermissions": [
     "applications",
     "applications.internal",

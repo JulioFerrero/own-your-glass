@@ -372,7 +372,8 @@ The vendored blocklist *data* in `etc/blocklist-upstream-safe.txt` is a
 snapshot of upstream work and **remains under its original CC BY 4.0
 license**; attribution to the upstream author is preserved in the
 file's header and must be carried with any redistribution of the
-blocklist contents.
+blocklist contents. The [`NOTICE`](./NOTICE) file says the same and
+travels with the app.
 
 ---
 
