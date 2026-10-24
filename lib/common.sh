@@ -164,8 +164,10 @@ oyg_watcher_stop() {
 }
 
 # oyg_run_lock — serialise harden/restore runs (boot hook, panel, watchers).
-# mkdir is atomic; a lock whose holder has died is taken over.
-OYG_RUN_LOCK="$OYG_ROOT/run.lock"
+# mkdir is atomic; a lock whose holder has died is taken over. It lives on
+# tmpfs: under $OYG_ROOT, a lock left by a reboot mid-run would name a pid
+# that some other process can own after boot, and every run would wait on it.
+OYG_RUN_LOCK=/tmp/oyg-run.lock
 oyg_run_lock() {
     _w_n=0
     while ! mkdir "$OYG_RUN_LOCK" 2>/dev/null; do
