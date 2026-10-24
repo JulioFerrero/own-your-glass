@@ -1,0 +1,7 @@
+Note on bundled data:
+
+The blocklist data vendored at `etc/blocklist-upstream-safe.txt` is a
+snapshot of upstream work and remains under its original CC BY 4.0
+license. Attribution to the upstream author is preserved in the
+file's header and must be carried with any redistribution of the
+blocklist contents.

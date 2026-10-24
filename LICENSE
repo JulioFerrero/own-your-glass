@@ -19,13 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Note on bundled data:
-
-The blocklist data vendored at `etc/blocklist-upstream-safe.txt` is a
-snapshot of upstream work and remains under its original CC BY 4.0
-license. Attribution to the upstream author is preserved in the
-file's header and must be carried with any redistribution of the
-blocklist contents.
