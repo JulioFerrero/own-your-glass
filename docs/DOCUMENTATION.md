@@ -419,11 +419,15 @@ later requests the LS2 service.
 ## Apps module: hide unwanted apps from the launcher
 
 The `apps` module uses LG's own `blockedSystemAppList` mechanism — the
-same one the vendor ships in the application manager — to **hide** a
-curated list of unwanted apps from the launcher. It does not delete,
-uninstall, or modify the apps themselves; the binaries stay on disk
-and can be re-shown at any time by removing their IDs from the
-blocked list.
+same one the vendor ships in the application manager — to **block** a
+curated list of unwanted apps. It does not delete, uninstall, or modify
+the apps themselves; the binaries stay on disk and come back as soon as
+their IDs leave the blocked list.
+
+Blocking is more than hiding. SAM treats a blocked app as not installed:
+`luna://com.webos.applicationManager/getAppInfo` answers `Invalid appId
+specified` for it, so nothing can launch it, the TV's own flows included.
+Only apps that nothing on the TV needs belong on the list (F52).
 
 ### The supported mechanism (verified on the device)
 
@@ -437,14 +441,13 @@ device's region (e.g. `ESP.json` in Spain). The module discovers
 the file dynamically — it globs `blockedSystemAppList/*.json` and
 prefers the existing one — so it does not hardcode the region.
 
-Apps whose IDs appear in this array are hidden from the launcher but
-remain installed; the app manager re-reads the file at every launcher
-render, so the effect is immediate and survives the app manager's own
-housekeeping.
+Apps whose IDs appear in this array stay installed but are unknown to
+the app manager, which re-reads the file at every launcher render, so
+the effect is immediate and survives the app manager's own housekeeping.
 
 ### Curated list (groups)
 
-The module ships with 48 IDs grouped into four blocks:
+The module ships with 38 IDs grouped into four blocks:
 
 - **Ad / ACR / commercial-overlay apps** — `acrcomponent`, `acrhdmi1..4`,
   `acroverlay`, `adoverlay[ex]`, `adhdmi1..4`, `fooddelivery[ex|hdmi1..4]`,
@@ -455,8 +458,12 @@ The module ships with 48 IDs grouped into four blocks:
   module, this just hides the launcher tile).
 - **SDK example apps shipped in production** — `enyoapp.epg`,
   `groupowner`, `nav`, the eight `qmlapp.*` examples, `systemui`.
-- **Demo / test / developer-only apps** — `store-demo`, `sync-demo`,
-  `factorywin`, `svcdiagnostics`, `quickrecovery`, `renewupdate`.
+- **Demo apps** — `store-demo`, `sync-demo`.
+
+Earlier versions also blocked `factorywin` (LG's factory/service menu),
+`quickrecovery`, `svcdiagnostics` and `renewupdate` (the webOS Re:New
+upgrade program). Those are retired: harden takes them back out of the
+live file unless LG's own original list (the backup) had them.
 
 ### Portability: skip-if-absent
 
@@ -475,6 +482,9 @@ across firmware updates.
 - If no original existed at harden time (the device's first boot
   after install), the sentinel backup tells restore to delete the
   live file instead.
+- If there is no backup at all (lost, or harden never got that far),
+  restore takes every ID the module adds, retired ones included, out of
+  the live file and keeps the rest, which is LG's own list.
 
 ### Boot persistence
 
@@ -487,7 +497,7 @@ merged in.
 
 ### What this module does NOT do
 
-- It hides local apps from the launcher. It does not delete them.
+- It blocks local apps. It does not delete them.
 - It does not remove **store-delivered promotional tiles** such as
   "Rakuten TV" or "LG Streaming Week". Those are not local apps —
   they are pulled from the content store / recommendation feed by the

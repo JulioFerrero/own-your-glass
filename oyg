@@ -11,6 +11,7 @@
 # Environment:
 #   OYG_AGGRESSIVE=1          enable risky modules (services-extra, perms,
 #                             remoteone chmod)
+#   OYG_FORCE_UNSUPPORTED=1   harden on a webOS older than 10 (untested)
 #   OYG_NETWORK_BLOCK=1       opt in to the network module (four layers)
 #   OYG_NETWORK_STRICT=1      include STRICT section (ThinQ/voice/AI/LG)
 #   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
@@ -41,6 +42,9 @@ Usage:
 Environment flags (read by individual modules):
   OYG_AGGRESSIVE=1           enable risky modules (services-extra, perms,
                              remoteone chmod)
+  OYG_FORCE_UNSUPPORTED=1    harden on a webOS older than 10, which this
+                             toolkit has never been run on (python3 is
+                             still required)
   OYG_NETWORK_BLOCK=1        opt in to the network module (four layers)
   OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
   OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
@@ -127,6 +131,12 @@ load_module() {
         err "no such module: $m"
         return 1
     fi
+    # A syntax error in a sourced file ends the whole shell, so one module
+    # this shell cannot parse would stop a restore before the rest ran.
+    if ! sh -n "$f" 2>/dev/null; then
+        err "module $m does not parse under this shell — skipped: $(sh -n "$f" 2>&1 | head -n 1)"
+        return 1
+    fi
     . "$f"
 }
 
@@ -163,6 +173,11 @@ run_modules() {
     export OYG_DRY_RUN
     if { [ "$action" = "harden" ] || [ "$action" = "restore" ]; } && [ "$dry" != "1" ]; then
         require_root
+    fi
+    # restore stays available everywhere: it is the way back.
+    if [ "$action" = "harden" ] && [ "$dry" != "1" ] && ! oyg_supported; then
+        err "$OYG_UNSUPPORTED — not hardening this TV ('oyg restore' still works)"
+        exit 1
     fi
     ensure_dirs
     if { [ "$action" = "harden" ] || [ "$action" = "restore" ]; } && [ "$dry" != "1" ]; then

@@ -225,7 +225,7 @@ _policy_sdx_status_dump() {
     if ! have python3; then
         return 0
     fi
-    python3 - "$f" <<'PY' 2>/dev/null
+    python3 -c '
 import json, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
@@ -236,7 +236,7 @@ try:
         print("%s %s" % (c, s))
 except Exception:
     pass
-PY
+' "$f" 2>/dev/null
 }
 
 # _policy_sdx_count_a <file>
@@ -249,7 +249,7 @@ _policy_sdx_count_a() {
         printf '0\n'
         return 0
     fi
-    python3 - "$f" <<'PY' 2>/dev/null
+    python3 -c '
 import json, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
@@ -261,7 +261,22 @@ try:
     print(n)
 except Exception:
     print(0)
-PY
+' "$f" 2>/dev/null
+}
+
+# _policy_sdx_count_entries <file>
+#   Print the number of statusList entries in <file> (0 if it does not
+#   parse). The harden sanity check compares the live store with its backup.
+_policy_sdx_count_entries() {
+    python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    print(len(d.get("statusList", []) or []))
+except Exception:
+    print(0)
+' "$1" 2>/dev/null || echo 0
 }
 
 # _policy_sdx_decline_all <file>
@@ -276,7 +291,9 @@ _policy_sdx_decline_all() {
         return 1
     fi
     tmp=$(mktemp 2>/dev/null) || return 1
-    if python3 - "$f" "$tmp" <<'PY' 2>/dev/null; then
+    # Not a here-doc: the webOS 4 shell failed to parse one inside this `if`
+    # ("line 279: syntax error: unexpected "then"").
+    if python3 -c '
 import json, sys, os
 src, dst = sys.argv[1], sys.argv[2]
 with open(src, "r", encoding="utf-8") as fh:
@@ -290,7 +307,7 @@ with open(dst, "w", encoding="utf-8") as fh:
     json.dump(d, fh, separators=(", ", ": "))
     fh.write("\n")
 sys.exit(0)
-PY
+' "$f" "$tmp" 2>/dev/null; then
         if mv "$tmp" "$f" 2>/dev/null; then
             return 0
         fi
@@ -605,26 +622,8 @@ mod_policy_harden() {
         sdx_sanity_entries=0
         sdx_orig_entries=0
         if have python3; then
-            sdx_sanity_entries=$(python3 - "$sdx_store_path" <<'PY' 2>/dev/null || echo 0
-import json, sys
-try:
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        d = json.load(f)
-    print(len(d.get("statusList", []) or []))
-except Exception:
-    print(0)
-PY
-)
-            sdx_orig_entries=$(python3 - "$sdx_bak" <<'PY' 2>/dev/null || echo 0
-import json, sys
-try:
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        d = json.load(f)
-    print(len(d.get("statusList", []) or []))
-except Exception:
-    print(0)
-PY
-)
+            sdx_sanity_entries=$(_policy_sdx_count_entries "$sdx_store_path")
+            sdx_orig_entries=$(_policy_sdx_count_entries "$sdx_bak")
         fi
         if [ "$sdx_sanity_entries" != "$sdx_orig_entries" ] || [ "$sdx_sanity_entries" = "0" ]; then
             warn "policy: sdx store $sdx_bn — entry-count sanity failed ($sdx_sanity_entries vs backup $sdx_orig_entries) — restoring from backup"

@@ -1,9 +1,13 @@
 #!/bin/sh
 # Undo Variant C: restore the stock connman launcher (DNS proxy back on) and
-# put the sink where it was. Needs no network.
+# put the sink where it was. Needs no network. The sink's upstream is the one
+# it last used (dns.upstream in the state file), or dns.sh finds it again.
 # ROLLBACK_NO_SINK=1 skips the sink restart — used by `dns.sh stop`, which
 # tears the sink down right after and does not want it resurrected on .2.
-R=/var/lib/own-your-glass
+R=${OYG_ROOT:-/var/lib/own-your-glass}
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DNS_SH=$HERE/dns.sh
+[ -r "$DNS_SH" ] || DNS_SH=$R/scripts/dns.sh
 LOG=$R/go-c.log
 # Cancel-flag: go-c.sh touches go-c.done on verified success. The timer is
 # a detached subshell that `kill` from a later run cannot reliably reach —
@@ -20,7 +24,8 @@ systemctl restart connman 2>/dev/null
 printf '[%s] [rollback] connmand restarted (stock)\n' "$(date '+%H:%M:%S')" >> $LOG
 if [ "${ROLLBACK_NO_SINK:-0}" != "1" ]; then
     pkill -f dnssink.py 2>/dev/null; sleep 1
-    OYG_DNS_UPSTREAM=192.0.2.53 OYG_DNS_BIND=127.0.0.2 sh $R/scripts/dns.sh start >> $LOG 2>&1
+    UP=$(awk -F= '$1 == "dns.upstream" { sub(/^[^=]*=/, ""); print; exit }' "$R/state" 2>/dev/null)
+    env ${UP:+OYG_DNS_UPSTREAM=$UP} OYG_DNS_BIND=127.0.0.2 sh "$DNS_SH" start >> $LOG 2>&1
     printf '[%s] [rollback] done — sink back on 127.0.0.2\n' "$(date '+%H:%M:%S')" >> $LOG
 else
     printf '[%s] [rollback] done — sink left down (ROLLBACK_NO_SINK)\n' "$(date '+%H:%M:%S')" >> $LOG

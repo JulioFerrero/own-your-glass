@@ -27,6 +27,17 @@ require_root() {
     fi
 }
 
+# Firmware the toolkit has not been run on is refused (oyg_supported in
+# lib/common.sh). A TV hardened before this check can still undo it with
+# 'sh <this dir>/oyg restore'.
+require_supported() {
+    why=$(. "$OYG_SRC/lib/common.sh" && { oyg_supported || printf '%s' "$OYG_UNSUPPORTED"; })
+    [ -z "$why" ] && return 0
+    err "$why — not installing"
+    err "to undo an earlier install: sh $OYG_SRC/oyg restore"
+    exit 1
+}
+
 require_dst_writable() {
     if ! mkdir -p "$OYG_DST" 2>/dev/null; then
         err "cannot create $OYG_DST (is /var writable?)"
@@ -53,7 +64,7 @@ install_files() {
     for f in "$OYG_SRC"/scripts/*.sh "$OYG_SRC"/scripts/*.py; do
         [ -f "$f" ] || continue
         case "$(basename "$f")" in
-            build-app.sh|refresh-blocklist.sh|redact-report.py) continue ;;
+            build-app.sh|refresh-blocklist.sh) continue ;;
         esac
         cp "$f" "$OYG_DST/scripts/$(basename "$f")"
     done
@@ -131,8 +142,14 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     date '+%Y-%m-%dT%H:%M:%S boot-hook start'
     # Bound each module so one that hangs cannot hold up the rest of the
     # hook (one boot's log stopped after policy and the sink never started).
+    # BusyBox before 1.30 only takes 'timeout -t SECS'; given 'timeout 300'
+    # it tries to run a program called 300 and no module runs at all.
     T=""
-    command -v timeout >/dev/null 2>&1 && T="timeout 300"
+    if timeout 1 true 2>/dev/null; then
+        T="timeout 300"
+    elif timeout -t 1 true 2>/dev/null; then
+        T="timeout -t 300"
+    fi
 
     # DNS first. Every other module used to run before the sink came up, and
     # in that gap (~45 s) LG's servers filled the home screen and pushed app
@@ -377,6 +394,7 @@ EOF
 
 main() {
     require_root
+    require_supported
     require_dst_writable
     install_files
     install_watcher_templates

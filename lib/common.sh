@@ -25,6 +25,33 @@ require_root() {
     fi
 }
 
+# oyg_supported — true on firmware the toolkit has been run on: webOS 10
+# (webOS 25) with python3. Otherwise false, with the reason in
+# OYG_UNSUPPORTED. OYG_FORCE_UNSUPPORTED=1 accepts an older webOS; nothing
+# accepts a missing python3, since the DNS, policy, launcher and debloat
+# steps need it. On webOS 4 (BusyBox 1.2x, no python3) the modules half-ran
+# and left a TV that could neither restore nor factory reset.
+OYG_MIN_WEBOS=10
+oyg_supported() {
+    OYG_UNSUPPORTED=""
+    _s_rel=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        /var/run/nyx/os_info.json 2>/dev/null | head -n 1)
+    if ! have python3; then
+        OYG_UNSUPPORTED="python3 is missing (webOS ${_s_rel:-unknown})"
+        return 1
+    fi
+    case "${_s_rel%%.*}" in
+        '' | *[!0-9]*)
+            OYG_UNSUPPORTED="cannot read webos_release from /var/run/nyx/os_info.json" ;;
+        *)
+            [ "${_s_rel%%.*}" -ge "$OYG_MIN_WEBOS" ] && return 0
+            OYG_UNSUPPORTED="webOS $_s_rel is older than webOS $OYG_MIN_WEBOS, the only version this toolkit has been run on" ;;
+    esac
+    [ "${OYG_FORCE_UNSUPPORTED:-0}" = "1" ] || return 1
+    warn "$OYG_UNSUPPORTED — continuing (OYG_FORCE_UNSUPPORTED=1)"
+    return 0
+}
+
 ensure_dirs() {
     [ "$OYG_DRY_RUN" = "1" ] && return 0
     [ -d "$OYG_ROOT" ] && return 0

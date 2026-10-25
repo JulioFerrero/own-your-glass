@@ -17,12 +17,15 @@
 #   1. Stop the DNS sinkhole + its watchdog (dns.sh stop) — unmounts the
 #      /etc/resolv.conf override so ConnMan's own resolv.conf is live again.
 #      If dns.sh is not installed, skip.
-#   2. Clear a manual ConnMan nameserver override, so the DHCP-provided
-#      resolvers are used again. Uses ConnMan's own API (connmanctl config);
-#      it never signals, reloads or restarts connmand.
-#   3. If wlan0 still has NO IPv4 address, install a static fallback address
-#      and default route so we keep a shell. The address is deliberately
-#      outside the router's DHCP pool (see STATIC_IP below).
+#   2. Clear a loopback ConnMan nameserver override (the old ConnMan route
+#      wrote one), so the DHCP-provided resolvers are used again. A DNS the
+#      owner set by hand (Pi-hole, 1.1.1.1, ...) is left alone. Uses
+#      ConnMan's own API (connmanctl config); it never signals, reloads or
+#      restarts connmand.
+#   3. If the TV has no default route and wlan0 has NO IPv4 address, put
+#      back the last address DHCP gave it (or OYG_STATIC_IP) so we keep a
+#      shell. On Ethernet, or anything else that still routes, it does
+#      nothing.
 #   4. Print exactly what it did, so the UI can show it.
 #
 # NEVER signals, reloads or restarts connmand — see the post-mortem in
@@ -37,7 +40,7 @@ if [ -r "$OYG_ROOT/lib/common.sh" ]; then
 fi
 
 WIFI_IF=${OYG_WIFI_IF:-wlan0}
-STATIC_IP=${OYG_STATIC_IP:-10.0.0.240}
+STATIC_IP=${OYG_STATIC_IP:-}
 STATIC_PREFIX=${OYG_STATIC_PREFIX:-24}
 GW=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')
 
@@ -64,18 +67,21 @@ fi
 if command -v connmanctl >/dev/null 2>&1; then
     svc=$(connmanctl services 2>/dev/null | awk '/^\*/{print $NF}' | head -1)
     if [ -n "${svc:-}" ]; then
-        # Only touch it if a manual override is actually present.
-        if grep -q '^Nameservers=' "/var/lib/connman/$svc/settings" 2>/dev/null; then
-            # DHCP-learned resolvers come back on the next reconnect; setting
-            # them explicitly here is what un-breaks a wedged resolver list.
-            if connmanctl config "$svc" --nameservers 192.0.2.53 192.0.2.54 >/dev/null 2>&1; then
-                say "OK   ConnMan nameserver override replaced with the ISP resolvers"
+        # Only a loopback override is ours to clear; an empty list hands the
+        # service back to the DHCP-provided resolvers.
+        if grep -q '^Nameservers=127\.' "/var/lib/connman/$svc/settings" 2>/dev/null; then
+            if connmanctl config "$svc" --nameservers >/dev/null 2>&1; then
+                say "OK   loopback ConnMan nameserver override cleared (DHCP resolvers)"
             else
-                say "WARN could not rewrite ConnMan nameservers (continuing)"
+                say "WARN could not clear the ConnMan nameserver override (continuing)"
             fi
+        elif grep -q '^Nameservers=' "/var/lib/connman/$svc/settings" 2>/dev/null; then
+            say "OK   ConnMan nameservers set by hand — left alone"
         else
             say "OK   no ConnMan nameserver override present"
         fi
+        [ -n "$STATIC_IP" ] || STATIC_IP=$(sed -n 's/^IPv4\.DHCP\.LastAddress=//p' \
+            "/var/lib/connman/$svc/settings" 2>/dev/null | head -n 1)
     fi
 fi
 
@@ -83,6 +89,10 @@ fi
 v4=$(ip -4 addr show "$WIFI_IF" 2>/dev/null | awk '/inet /{print $2}' | head -1)
 if [ -n "$v4" ]; then
     say "OK   $WIFI_IF already has $v4 — no static fallback needed"
+elif [ -n "${GW:-}" ]; then
+    say "OK   default route via $GW — no static fallback needed"
+elif [ -z "$STATIC_IP" ]; then
+    say "WARN $WIFI_IF has no IPv4 and no earlier DHCP address is known — set OYG_STATIC_IP for a fallback"
 else
     say "WARN $WIFI_IF has no IPv4 — installing static fallback $STATIC_IP/$STATIC_PREFIX"
     ip addr add "$STATIC_IP/$STATIC_PREFIX" dev "$WIFI_IF" 2>/dev/null \

@@ -664,8 +664,10 @@ cmd_stop() {
     # restart is not wanted — we are stopping everything — hence the knob.
     if [ "$(cat "$OYG_ROOT/dns.bind" 2>/dev/null)" = "127.0.0.1" ] \
         && awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
-        if [ -x "$OYG_ROOT/rollback-c.sh" ]; then
-            ROLLBACK_NO_SINK=1 sh "$OYG_ROOT/rollback-c.sh" || true
+        rb="$OYG_HERE/rollback-c.sh"
+        [ -r "$rb" ] || rb="$OYG_ROOT/rollback-c.sh"
+        if [ -r "$rb" ]; then
+            ROLLBACK_NO_SINK=1 sh "$rb" || true
             ok_dns "Variant C undone (stock connman launcher restored)"
         else
             warn_dns "dns.bind says C is active but rollback-c.sh is missing — connmand stays proxy-less until reboot"

@@ -2,8 +2,10 @@ OYG_MOD_APPS=1
 
 # apps.sh — hide a curated list of unwanted apps from the launcher via
 # {"blocked_system_applist":[...]} in blockedSystemAppList/<REGION>.json
-# (read at every launcher render; hides only, never deletes; /var/preferences
-# is writable). Merge curated + existing IDs, filter to present apps, write
+# (/var/preferences is writable). Nothing is deleted, but SAM treats a listed
+# app as not installed: getAppInfo answers "Invalid appId", so nothing can
+# launch it, LG's own flows included. Only list apps nothing needs.
+# Merge curated + existing IDs, filter to present apps, write
 # via temp file + mv (no python — awk/sed/tr/sort/uniq). Backup ONCE:
 #    (never overwrite; a later edit cannot quietly corrupt the audit
 #    trail).
@@ -42,10 +44,16 @@ com.webos.exampleapp.qmlapp.discover com.webos.exampleapp.qmlapp.epg
 com.webos.exampleapp.qmlapp.hbbtv com.webos.exampleapp.qmlapp.livetv com.webos.exampleapp.qmlapp.search
 com.webos.exampleapp.systemui
 '
-# --- Demo / test / developer-only apps ---
+# --- Demo apps ---
 APPS_GROUP_DEMO='
-com.webos.app.store-demo com.webos.app.sync-demo com.webos.app.factorywin
-com.webos.app.svcdiagnostics com.webos.app.quickrecovery com.webos.app.renewupdate
+com.webos.app.store-demo com.webos.app.sync-demo
+'
+# --- Retired: blocked by earlier versions, taken back out by harden unless
+# LG's own list (the backup) had them. They are LG's service menu
+# (factorywin), recovery, service diagnostics and webOS upgrade apps.
+APPS_RETIRED='
+com.webos.app.factorywin com.webos.app.quickrecovery
+com.webos.app.svcdiagnostics com.webos.app.renewupdate
 '
 
 # State keys:
@@ -222,6 +230,32 @@ _mod_apps_write_json() {
     return 0
 }
 
+# _mod_apps_strip_ours <file>
+#   Restore without a backup (lost, or harden never got that far): drop
+#   every ID this module adds, retired ones included, and keep the rest,
+#   which is LG's own list.
+_mod_apps_strip_ours() {
+    f=$1
+    ours=$(mktemp 2>/dev/null) || return 1
+    kept=$(mktemp 2>/dev/null) || { rm -f "$ours"; return 1; }
+    { _mod_apps_collect_curated; printf '%s\n' $APPS_RETIRED; } >"$ours"
+    _mod_apps_extract_existing_ids "$f" | grep -Fxv -f "$ours" >"$kept"
+    n_all=$(_mod_apps_extract_existing_ids "$f" | awk 'END { print NR }')
+    n_kept=$(awk 'END { print NR }' "$kept")
+    src=0
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: drop %s toolkit ID(s) from %s, keep %s\n' \
+            "$((n_all - n_kept))" "$f" "$n_kept" >&2
+    elif _mod_apps_write_json "$f" "$kept"; then
+        ok "apps: dropped $((n_all - n_kept)) toolkit ID(s) from $f, kept $n_kept of LG's"
+    else
+        warn "apps: could not rewrite $f"
+        src=1
+    fi
+    rm -f "$ours" "$kept"
+    return $src
+}
+
 mod_apps_harden() {
     require_root
     ensure_dirs
@@ -273,6 +307,16 @@ mod_apps_harden() {
     else
         existing_ids=$(_mod_apps_extract_existing_ids "$target")
     fi
+
+    # --- 2b. Take out the retired IDs an earlier version added ---
+    original_ids=$(_mod_apps_extract_existing_ids "$backup")
+    unblocked=""
+    for id in $APPS_RETIRED; do
+        printf '%s\n' "$original_ids" | grep -Fxq -- "$id" && continue
+        printf '%s\n' "$existing_ids" | grep -Fxq -- "$id" || continue
+        existing_ids=$(printf '%s\n' "$existing_ids" | grep -Fxv -- "$id")
+        unblocked="$unblocked $id"
+    done
 
     # --- 3. Filter curated IDs to those present on the device ---
     curated_present=""
@@ -326,10 +370,12 @@ EOF
         printf 'DRY-RUN: write merged list (%s unique IDs) to %s\n' \
             "$(awk 'END{print NR}' "$merged" 2>/dev/null)" "$target" >&2
         ok "apps: would hide $added_count curated app(s) (skipped $skipped_count absent); preserved $existing_kept pre-existing"
+        [ -n "$unblocked" ] && ok "apps: would unblock$unblocked (blocked by an earlier version)"
         rm -f "$merged" 2>/dev/null
     else
         if _mod_apps_write_json "$target" "$merged"; then
             ok "apps: wrote $target — $added_count curated added ($skipped_count skipped), $existing_kept pre-existing preserved"
+            [ -n "$unblocked" ] && ok "apps: unblocked$unblocked (blocked by an earlier version)"
             if [ "$skipped_count" -gt 0 ]; then
                 warn "apps: $skipped_count curated ID(s) absent on this device (skipped): $skipped_list"
             fi
@@ -363,8 +409,12 @@ mod_apps_restore() {
     rc=0
 
     if [ ! -e "$backup" ]; then
-        warn "apps: no backup at $backup — cannot restore"
-        rc=1
+        if [ -e "$target" ]; then
+            warn "apps: no backup at $backup — taking the toolkit's IDs out of $target instead"
+            _mod_apps_strip_ours "$target" || rc=1
+        else
+            ok "apps: no backup and no $target — nothing to restore"
+        fi
     elif [ ! -e "$target" ]; then
         warn "apps: $target missing; nothing to restore"
     else
@@ -443,7 +493,8 @@ EOF
     [ -z "$region" ] && region=$(_mod_apps_region_from_path "$target")
 
     if [ "$applied" = "1" ]; then
-        if [ "$curated_n" -eq "$curated_total" ]; then
+        # IDs absent on this firmware were never added, so they cannot count.
+        if [ "$curated_n" -ge "$((curated_total - ${skipped:-0}))" ]; then
             print_status OK "apps: $n_existing blocked (region=$region, $curated_n/$curated_total curated present)"
         else
             print_status PARTIAL "apps: $n_existing blocked but only $curated_n/$curated_total curated present (region=$region)"

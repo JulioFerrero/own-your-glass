@@ -1130,7 +1130,7 @@ That is definitive proof the poison took: the TV believes the gateway is at the 
 | `marker2.konograma.com` | DNS + **TLS every ~50 s** (periodic beacon). *Unidentified — flagged for follow-up.* |
 | `108.132.67.12:8883` | **MQTT over TLS** (IoT channel) |
 | `255.255.255.255:9999` UDP | LG proprietary LAN device discovery broadcast |
-| DNS servers | `192.0.2.53`, `192.0.2.54` (the ISP's resolvers) |
+| DNS servers | `<ISP-DNS-1>`, `<ISP-DNS-2>` (the ISP's resolvers) |
 | Largest endpoint | `84.40.62.234:443` (~40 KiB) |
 | Other TLS | `142.251.157.4` (Google), `151.101.133.89` (Fastly), `52.16.104.93`, `108.133.178.110` |
 | **Ad/telemetry hosts flagged** | **none** |
