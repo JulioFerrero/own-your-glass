@@ -122,7 +122,14 @@ onetrust.io                      # OneTrust consent-management
 mobile-data.onetrust.io
 googletagmanager.com             # Google Tag Manager — fires on HbbTV broadcaster pages + app webviews
 www.googletagmanager.com
-lgsmartad.com                    # LG ad server (suffix covers es.ad.lgsmartad.com and siblings)
+lgsmartad.com                    # LG ad server; the suffix covers siblings only through the layer-4 resolver
+# /etc/hosts matches exact names, so the per-country ad hosts are listed too
+# (seen on a C4 with LG Services Country set to Serbia, then Austria).
+rs.ad.lgsmartad.com
+rs.info.lgsmartad.com
+at.ad.lgsmartad.com
+at.info.lgsmartad.com
+eic-ocp.lgtviot.com              # IoT event telemetry, sibling of eic.lgtviot.com (listed upstream)
 bidr.io                          # Alphonso's ad-creative CDN (media.bidr.io) — found in the admanager image cache
 doubleverify.com                 # ad-verification beacons — found in the web-app (WAM) cache
 
