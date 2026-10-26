@@ -21,7 +21,7 @@ tv_files() {
     printf '{"blocked_system_applist":["com.example.kept"]}\n' \
         >/var/preferences/com.webos.applicationManager/blockedSystemAppList/ESP.json
     printf 'cookie\n' >/mnt/lg/cmn_data/admanager/cookie/ad_cookie
-    printf 'nameserver 192.168.4.1\n' >/var/lib/misc/resolv.conf
+    printf 'nameserver 192.168.1.1\n' >/var/lib/misc/resolv.conf
     printf '{"eula":[{"id":"S_VNG","accepted":true},{"id":"S_TAG","accepted":true}]}\n' \
         >/var/luna/preferences/eula
     for d in cmn_data cache user; do
