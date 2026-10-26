@@ -403,6 +403,23 @@ The full list, with how each limit was verified, is in
 
 ---
 
+## Tests
+
+`tests/run.sh` runs the test suite in any POSIX shell. Run it in an old BusyBox (the TV's shell
+family) and in dash:
+
+```sh
+docker run --rm --platform linux/amd64 -e OYG_TEST_CONTAINER=1 \
+    -v "$PWD":/oyg:ro -w /oyg busybox:1.26 sh tests/run.sh
+dash tests/run.sh
+```
+
+`OYG_TEST_CONTAINER=1` turns on the tests that build a TV-shaped filesystem at real paths
+(`/var/luna`, `/mnt/lg`, `/usr/sbin`, ...) and check that `--dry-run`, `status` and `verify`
+change nothing on it; only set it in a throwaway container. Without it those tests are skipped.
+
+---
+
 ## Attribution
 
 This toolkit builds on the work of others. Specific credit:
