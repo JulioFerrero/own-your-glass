@@ -114,7 +114,9 @@ say "   interfaces: $(ip -4 addr show "$WIFI_IF" 2>/dev/null | awk '/inet /{prin
 resolv=$(grep -h '^nameserver' /etc/resolv.conf 2>/dev/null | tr '\n' ' ')
 say "   resolv.conf: ${resolv:-<none>}"
 if type nslookup >/dev/null 2>&1; then
-    ans=$(nslookup github.com 2>/dev/null | awk '/^Address/ && !/#53$/{print $2}' | tail -n 1)
+    # Answers come after "Name:"; "Address 1: ip name" on BusyBox 1.24.
+    ans=$(nslookup github.com 2>/dev/null | awk '/^Name:/ { n = 1; next }
+        n && /^Address/ { sub(/^Address[ 0-9]*:[ \t]*/, ""); sub(/[ \t#].*/, ""); print }' | tail -n 1)
     say "   test lookup (github.com): ${ans:-FAILED}"
 else
     say "   test lookup: skipped (no nslookup)"

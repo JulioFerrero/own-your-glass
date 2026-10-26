@@ -111,3 +111,19 @@ test_without_an_init_tool_nothing_is_present() {
     assert_eq "$(oyg_unit_query acr.service is-active)" "unknown"
     if oyg_unit_stop acr.service 2>/dev/null; then fail "stop should fail"; fi
 }
+
+test_upstart_job_between_states_is_activating_or_deactivating() {
+    _no_systemctl; upstart_stub; _lib
+    upstart_job rdxd running "minimal-boot-done"
+    printf 'start/pre-start, process 300\nminimal-boot-done\n' >"$T_TMP/jobs/rdxd"
+    assert_eq "$(oyg_unit_query rdxd.service is-active)" "activating"
+    printf 'stop/killed, process 300\nminimal-boot-done\n' >"$T_TMP/jobs/rdxd"
+    assert_eq "$(oyg_unit_query rdxd.service is-active)" "deactivating"
+}
+
+test_upstart_show_config_with_stop_on_and_emits_is_still_read() {
+    _no_systemctl; _lib
+    # shellcheck disable=SC2016 # expanded by the stub
+    stub initctl 'case $1 in status) echo "rdxd stop/waiting" ;; show-config) printf "rdxd\n  stop on started start_update\n  emits rdxd-ready\n  start on minimal-boot-done\n" ;; esac'
+    assert_eq "$(oyg_unit_query rdxd.service is-enabled)" "enabled"
+}

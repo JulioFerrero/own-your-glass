@@ -77,29 +77,29 @@ oyg_unit_present() {
 # upstart job: active/inactive from its state, enabled/disabled from
 # whether it has a "start on" (started at boot). "unknown" if no answer.
 oyg_unit_query() {
-    _q=
+    _oyg_q=
     case $(oyg_init) in
-        systemd) _q=$(systemctl "$2" "$1" 2>/dev/null | tr -d '[:space:]') ;;
+        systemd) _oyg_q=$(systemctl "$2" "$1" 2>/dev/null | tr -d '[:space:]') ;;
         upstart)
-            _job=$(oyg_unit_job "$1")
+            _oyg_job=$(oyg_unit_job "$1")
             case $2 in
                 is-active)
-                    case $(initctl status "$_job" 2>/dev/null) in
-                        *start/running*) _q=active ;;
-                        *stop/waiting*) _q=inactive ;;
-                        *start/*) _q=activating ;;
-                        *stop/*) _q=deactivating ;;
+                    case $(initctl status "$_oyg_job" 2>/dev/null) in
+                        *start/running*) _oyg_q=active ;;
+                        *stop/waiting*) _oyg_q=inactive ;;
+                        *start/*) _oyg_q=activating ;;
+                        *stop/*) _oyg_q=deactivating ;;
                     esac ;;
                 is-enabled)
-                    if _cfg=$(initctl show-config "$_job" 2>/dev/null); then
-                        case $_cfg in
-                            *"start on "*) _q=enabled ;;
-                            *) _q=disabled ;;
+                    if _oyg_cfg=$(initctl show-config "$_oyg_job" 2>/dev/null); then
+                        case $_oyg_cfg in
+                            *"start on "*) _oyg_q=enabled ;;
+                            *) _oyg_q=disabled ;;
                         esac
                     fi ;;
             esac ;;
     esac
-    printf '%s\n' "${_q:-unknown}"
+    printf '%s\n' "${_oyg_q:-unknown}"
 }
 
 # oyg_unit_stop <unit> / oyg_unit_start <unit> — through `run`, so a dry run
@@ -123,12 +123,12 @@ oyg_unit_start() {
 
 # _oyg_upstart <stop|start> <unit> <state once done>
 _oyg_upstart() {
-    _job=$(oyg_unit_job "$2")
+    _oyg_job=$(oyg_unit_job "$2")
     if [ "$OYG_DRY_RUN" = "1" ]; then
-        run initctl "$1" "$_job"
+        run initctl "$1" "$_oyg_job"
         return
     fi
-    run initctl "$1" "$_job" >/dev/null 2>&1 \
+    run initctl "$1" "$_oyg_job" >/dev/null 2>&1 \
         || [ "$(oyg_unit_query "$2" is-active)" = "$3" ]
 }
 

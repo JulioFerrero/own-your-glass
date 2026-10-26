@@ -194,3 +194,11 @@ test_dns_test_command_queries_without_options() {
     assert_contains "$out" "93.184.216.34"
     assert_not_contains "$out" "Usage: nslookup"
 }
+
+test_rescue_script_reads_busybox_124_answers() {
+    out=$(printf 'Server:    127.0.0.1\nAddress 1: 127.0.0.1 localhost\n\nName:      github.com\nAddress 1: 140.82.112.4 lb-140-82-112-4-iad.github.com\n' \
+        | awk '/^Name:/ { n = 1; next }
+        n && /^Address/ { sub(/^Address[ 0-9]*:[ \t]*/, ""); sub(/[ \t#].*/, ""); print }' | tail -n 1)
+    assert_eq "$out" "140.82.112.4"
+    grep -q 'sub(/^Address\[ 0-9\]\*:' "$OYG_SRC/scripts/recover-network.sh" || fail "recover-network.sh no longer uses this parser"
+}

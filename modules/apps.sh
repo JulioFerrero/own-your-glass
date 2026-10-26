@@ -11,13 +11,15 @@ OYG_MOD_APPS=1
 #    trail).
 # Details, verification history and findings: docs/FINDINGS.md (F41)
 
-APPS_DIR=${APPS_DIR:-/var/preferences/com.webos.applicationManager/blockedSystemAppList}
+APPS_DIR_STOCK=/var/preferences/com.webos.applicationManager/blockedSystemAppList
+APPS_DIR=${APPS_DIR:-$APPS_DIR_STOCK}
 APPS_KEY=blocked_system_applist
 # webOS 4's app manager reads only blockedAppList/<REGION>.json, key
 # blocked_applist: its binary never mentions blockedSystemAppList. Anything
-# else (webOS 10, or no sam to look at) keeps the list above.
+# else (webOS 10, no sam to look at, or APPS_DIR set by hand) keeps the
+# list above.
 APPS_SAM=${APPS_SAM:-/usr/sbin/sam}
-if [ -f "$APPS_SAM" ] && ! grep -q blockedSystemAppList "$APPS_SAM" 2>/dev/null \
+if [ "$APPS_DIR" = "$APPS_DIR_STOCK" ] && [ -f "$APPS_SAM" ] && ! grep -q blockedSystemAppList "$APPS_SAM" 2>/dev/null \
     && grep -q blockedAppList "$APPS_SAM" 2>/dev/null; then
     APPS_DIR=${APPS_DIR%/*}/blockedAppList
     APPS_KEY=blocked_applist

@@ -545,6 +545,10 @@ _mod_network_variant_c_on() {
 # the blocklist too. scripts/go-c.sh does it, with its rollback timer.
 _mod_network_variant_c_harden() {
     [ "${OYG_DNS_VARIANT_C:-0}" = "1" ] || return 0
+    if [ "$(oyg_init)" != systemd ]; then
+        ok "network: Variant C skipped — it needs systemd (webOS 10); the DNS sink works without it"
+        return 0
+    fi
     if [ "$OYG_DRY_RUN" = "1" ]; then
         printf 'DRY-RUN: sh %s/go-c.sh (Variant C)\n' "$(dirname "$1")"
         return 0
