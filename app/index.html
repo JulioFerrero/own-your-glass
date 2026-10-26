@@ -26,6 +26,9 @@
      washes, ALL-CAPS eyebrow labels, "a · b · c" meta strings, "WORD — text"
      labels, neon glow, pure black, centred hero, emoji.
      --------------------------------------------------------------------- */
+  /* webOS 4's web engine is Chromium 53: no grid (57), no flex gap (84), no
+     inset (87). Spacing in flex rows uses margins; grid has a flex fallback
+     in the @supports block below. */
   :root{
     --ink:#161411;        /* warm charcoal, never pure black */
     --ink-2:#1e1b17;
@@ -45,9 +48,9 @@
   .shell{height:100%;display:flex;flex-direction:column;padding:0 72px}
 
   /* ---- header: one line, a sentence, not a badge ---- */
-  header{display:flex;align-items:baseline;gap:28px;padding:44px 0 26px;
+  header{display:flex;align-items:baseline;padding:44px 0 26px;
     border-bottom:2px solid var(--rule)}
-  header .wordmark{font-size:40px;font-weight:600;letter-spacing:-.01em}
+  header .wordmark{font-size:40px;font-weight:600;letter-spacing:-.01em;margin-right:28px}
   header .verdict{margin-left:auto;font-size:32px;color:var(--muted)}
   header .verdict b{font-weight:600}
   header .verdict.ok b{color:var(--ok)}
@@ -107,17 +110,36 @@
     align-items:center;margin-top:14px}
   .pair .pairname{font-size:26px;color:var(--muted)}
 
+  /* Chromium 53 (webOS 4) has no grid: the same boxes in flex. Percentages
+     and margins stand in for the fr tracks and the gaps. */
+  @supports not (display:grid){
+    .board{display:flex}
+    .col{flex:none;width:calc((100% - 72px) * 1.35 / 2.35)}
+    .col.right{width:calc((100% - 72px) / 2.35);margin-left:72px}
+    .sub{display:flex}
+    .sub .mark{flex:none;margin-right:22px}
+    .sub .label{flex:1;min-width:0;margin-right:22px}
+    .sub .state{flex:none;width:176px}
+    /* each key carries 18px above and to its left; the box pulls it back out */
+    .keys{display:flex;flex-wrap:wrap;margin:-18px 0 0 -18px}
+    .keys button{flex:0 1 calc((100% - 36px) / 2);min-width:0;margin:18px 0 0 18px}
+    .keys button.wide{flex-basis:calc(100% - 18px)}
+    .pair{display:flex}
+    .pair > *{flex:0 1 calc((100% - 36px) / 3);min-width:0}
+    .pair button{margin-left:18px}
+  }
+
   /* ---- console ---- */
   .console{border-top:2px solid var(--rule);padding:18px 0 24px;height:236px;
     transition:height .28s ease-out;
     display:flex;flex-direction:column;min-height:0}
-  .chead{display:flex;align-items:center;gap:26px;margin-bottom:12px}
-  .chead h2{font-size:27px;font-weight:500;color:var(--muted);margin:0}
-  .prog{margin-left:auto;display:flex;align-items:center;gap:20px;font-size:25px;
+  .chead{display:flex;align-items:center;margin-bottom:12px}
+  .chead h2{font-size:27px;font-weight:500;color:var(--muted);margin:0 26px 0 0}
+  .prog{margin-left:auto;display:flex;align-items:center;font-size:25px;
     color:var(--muted)}
-  .prog .bar{width:300px;height:10px;background:#2b261e;border:2px solid var(--rule);
+  .prog .bar{width:300px;margin-left:20px;height:10px;background:#2b261e;border:2px solid var(--rule);
     position:relative;overflow:hidden}
-  .prog .bar i{position:absolute;inset:0;right:auto;width:0;background:var(--amber);
+  .prog .bar i{position:absolute;top:0;bottom:0;left:0;width:0;background:var(--amber);
     transition:width .35s ease-out}
   .prog.indet .bar i{width:40%;animation:sweep 1.15s ease-in-out infinite}
   .prog .done{color:var(--ok)} .prog .failed{color:var(--bad)}
@@ -297,7 +319,10 @@ function buildNav() {
 }
 function paint() {
   nav.forEach(function (el, i) { el.classList.toggle("focus", i === idx); });
-  if (nav[idx]) nav[idx].scrollIntoView({ block: "nearest" });
+  /* scrollIntoView(options) arrives in Chrome 61; older engines read the
+     object as `true` and snap the element to the top. */
+  var el = nav[idx];
+  if (el) { if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(false); else el.scrollIntoView({ block: "nearest" }); }
 }
 function move(dir) {
   if (!nav.length) return;
@@ -417,7 +442,7 @@ var job = null;   /* {act, startedAt, seen, total, lastLineAt, phase, finished, 
 
 function fmtDur(ms) {
   var s = Math.round(ms / 1000);
-  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60 < 10 ? "0" : "") + s % 60 + "s";
 }
 function paintProgress() {
   var shell = document.querySelector('.shell');
