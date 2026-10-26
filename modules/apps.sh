@@ -255,14 +255,8 @@ mod_apps_harden() {
 
     target=$(_mod_apps_pick_file)
     if [ ! -d "$APPS_DIR" ]; then
-        if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR" >&2
-        elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
-            err "apps: cannot create $APPS_DIR"
-            return 1
-        else
-            state_put "apps.dir_created" "$APPS_DIR"
-        fi
+        run mkdir -p "$APPS_DIR" 2>/dev/null || { err "apps: cannot create $APPS_DIR"; return 1; }
+        state_put "apps.dir_created" "$APPS_DIR"
     fi
     region=$(_mod_apps_region_from_path "$target")
     backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"

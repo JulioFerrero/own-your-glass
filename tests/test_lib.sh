@@ -16,3 +16,17 @@ test_a_test_can_still_fake_a_process() {
     stub pidof 'echo 4242'
     assert_eq "$(pidof avahi-daemon)" "4242"
 }
+
+test_device_commands_do_not_exist_unless_a_test_fakes_them() {
+    for c in systemctl initctl ip route iptables luna-send node nslookup chattr ps reboot kill_helper; do
+        if type "$c" >/dev/null 2>&1; then
+            case $(type "$c") in *builtin*) ;; *) fail "$c is reachable: $(type "$c")" ;; esac
+        fi
+    done
+}
+
+test_proc_scans_see_no_real_processes() {
+    # shellcheck source=lib/common.sh
+    . "$OYG_SRC/lib/common.sh"
+    assert_eq "$(oyg_pids_matching sh)" ""
+}

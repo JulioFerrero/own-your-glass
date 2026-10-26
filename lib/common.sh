@@ -59,12 +59,12 @@ oyg_nap() {
 }
 
 # oyg_pids_matching <text> — pids whose command line contains <text>, like
-# pgrep -f, which some BusyBox builds leave out.
+# pgrep -f, which some BusyBox builds leave out. OYG_PROC: tests only.
 oyg_pids_matching() {
-    for _p_d in /proc/[0-9]*; do
-        [ "${_p_d#/proc/}" = "$$" ] && continue
+    for _p_d in "${OYG_PROC:-/proc}"/[0-9]*; do
+        [ "${_p_d##*/}" = "$$" ] && continue
         tr '\0' ' ' <"$_p_d/cmdline" 2>/dev/null | grep -qF -- "$1" \
-            && printf '%s\n' "${_p_d#/proc/}"
+            && printf '%s\n' "${_p_d##*/}"
     done
     return 0
 }

@@ -1,21 +1,34 @@
 # tests/lib.sh — helpers sourced by tests/run.sh before each test.
 
-# t_setup — fresh temp dir, OYG_ROOT inside it, and a stub dir first on
-# PATH. Everything is removed when the test's subshell exits, Ctrl-C too.
-# The stubs start with pidof, pgrep, mount and umount: a test sees no real
-# process and mounts nothing unless it stubs them itself, so a harden run
-# can never signal or bind over anything on the machine running the tests.
+# Plain tools a test may use for real. Nothing that reaches a device,
+# a service or a process (systemctl, initctl, ip, mount, luna-send, ps, ...):
+# those exist in a test only as stubs it adds itself.
+T_TOOLS="sh awk sed grep cat ls mkdir rm rmdir mv cp ln chmod stat mktemp date tr cut
+head tail wc sort uniq basename dirname find cksum cmp diff sleep touch readlink tee
+xargs env expr od id uname printf echo true false test sync timeout nohup"
+
+# t_setup — fresh temp dir, OYG_ROOT inside it, and a PATH of stubs plus the
+# plain tools above. Everything is removed when the test's subshell exits,
+# Ctrl-C too. pidof, pgrep, mount and umount start as stubs, and /proc
+# scans (OYG_PROC) see an empty dir: a test finds no real process and
+# changes nothing on the machine running it unless it stubs a command.
 t_setup() {
     T_TMP=$(mktemp -d "${TMPDIR:-/tmp}/oyg-test.XXXXXX") || exit 1
     trap 'rm -rf "$T_TMP"' EXIT
     trap 'exit 130' HUP INT TERM
     OYG_ROOT="$T_TMP/oyg-root"
     T_STUBS="$T_TMP/stubs"
+    T_BIN="$T_TMP/bin"
     T_CALLS="$T_TMP/calls.log"
-    mkdir -p "$T_STUBS"
+    OYG_PROC="$T_TMP/proc"
+    mkdir -p "$T_STUBS" "$T_BIN" "$OYG_PROC"
     : >"$T_CALLS"
-    PATH="$T_STUBS:$PATH"
-    export OYG_ROOT T_CALLS PATH
+    for _tool in $T_TOOLS; do
+        _path=$(command -v "$_tool" 2>/dev/null) || continue
+        case $_path in /*) ln -s "$_path" "$T_BIN/$_tool" ;; esac
+    done
+    PATH="$T_STUBS:$T_BIN"
+    export OYG_ROOT OYG_PROC T_CALLS PATH
     for c in pidof pgrep; do stub "$c" 'exit 1'; done
     for c in mount umount; do stub "$c"; done
 }
