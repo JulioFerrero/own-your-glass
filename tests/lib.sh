@@ -28,7 +28,7 @@ t_setup() {
         case $_path in /*) ln -s "$_path" "$T_BIN/$_tool" ;; esac
     done
     PATH="$T_STUBS:$T_BIN"
-    export OYG_ROOT T_CALLS PATH
+    export OYG_ROOT T_TMP T_CALLS PATH
     for c in pidof pgrep; do stub "$c" 'exit 1'; done
     for c in mount umount; do stub "$c"; done
 }

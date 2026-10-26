@@ -21,6 +21,99 @@ have() {
     type "$1" >/dev/null 2>&1
 }
 
+# Services: systemd units on webOS 10, upstart jobs on webOS 4 (no
+# systemctl there). Modules name services by systemd unit; these helpers
+# map them to upstart jobs when that is what the TV runs.
+
+# oyg_init — the TV's init system: systemd, upstart or none.
+oyg_init() {
+    if have systemctl; then
+        printf 'systemd\n'
+    elif have initctl; then
+        printf 'upstart\n'
+    else
+        printf 'none\n'
+    fi
+}
+
+# oyg_unit_job <unit> — the upstart job that runs <unit>.
+oyg_unit_job() {
+    case $1 in
+        dmost.service) printf 'required_dmost\n' ;;
+        *.service) printf '%s\n' "${1%.service}" ;;
+        *.socket) printf '%s\n' "${1%.socket}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# oyg_unit_present <unit> — true if this TV has the unit (or its job).
+oyg_unit_present() {
+    case $(oyg_init) in
+        systemd) systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -Fxq -- "$1" ;;
+        upstart) initctl status "$(oyg_unit_job "$1")" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+# oyg_unit_query <unit> is-active|is-enabled — systemctl's answer. For an
+# upstart job: active/inactive from its state, enabled/disabled from
+# whether it has a "start on" (started at boot). "unknown" if no answer.
+oyg_unit_query() {
+    _q=
+    case $(oyg_init) in
+        systemd) _q=$(systemctl "$2" "$1" 2>/dev/null | tr -d '[:space:]') ;;
+        upstart)
+            _job=$(oyg_unit_job "$1")
+            case $2 in
+                is-active)
+                    case $(initctl status "$_job" 2>/dev/null) in
+                        *start/running*) _q=active ;;
+                        *stop/waiting*) _q=inactive ;;
+                        *start/*) _q=activating ;;
+                        *stop/*) _q=deactivating ;;
+                    esac ;;
+                is-enabled)
+                    if _cfg=$(initctl show-config "$_job" 2>/dev/null); then
+                        case $_cfg in
+                            *"start on "*) _q=enabled ;;
+                            *) _q=disabled ;;
+                        esac
+                    fi ;;
+            esac ;;
+    esac
+    printf '%s\n' "${_q:-unknown}"
+}
+
+# oyg_unit_stop <unit> / oyg_unit_start <unit> — through `run`, so a dry run
+# only prints. As with systemctl, stopping a stopped upstart job (or starting
+# a running one) succeeds.
+oyg_unit_stop() {
+    case $(oyg_init) in
+        systemd) run systemctl stop "$1" ;;
+        upstart) _oyg_upstart stop "$1" inactive ;;
+        *) return 1 ;;
+    esac
+}
+
+oyg_unit_start() {
+    case $(oyg_init) in
+        systemd) run systemctl start "$1" ;;
+        upstart) _oyg_upstart start "$1" active ;;
+        *) return 1 ;;
+    esac
+}
+
+# _oyg_upstart <stop|start> <unit> <state once done>
+_oyg_upstart() {
+    _job=$(oyg_unit_job "$2")
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        run initctl "$1" "$_job"
+        return
+    fi
+    run initctl "$1" "$_job" >/dev/null 2>&1 \
+        || [ "$(oyg_unit_query "$2" is-active)" = "$3" ]
+}
+
 # oyg_retire_backup <file> — after a restore has put <file> back, move it to
 # <file>.restored: kept for the record, and the next harden takes a fresh
 # backup instead of reviving this one over changes made since.
