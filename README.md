@@ -41,18 +41,19 @@ and the app opens. From there it is all the remote: press **Apply hardening**. A
 works, a phone included, and the same line updates the app later. It is not in Homebrew
 Channel's own store yet.
 
-**Older webOS (testing mode).** Apply hardening only runs on webOS 10 and newer, the only
-version this has been tested on; on anything older it refuses. To test it on an older TV anyway,
-add `OYG_FORCE_UNSUPPORTED=1` before `sh`:
+**Older webOS.** Apply hardening runs on webOS 10 and newer and on webOS 3 and 4 (tested on an
+LG 43UM7300, webOS 4.10.1, and an LG 65UJ6300, webOS 3.9.3; see
+[docs/WEBOS-3-4.md](docs/WEBOS-3-4.md) for what differs there). On webOS 5–9, which nobody has
+tried yet, it refuses. To test it on one of those anyway, add `OYG_FORCE_UNSUPPORTED=1` before `sh`:
 
 ```sh
 ssh root@<tv-ip> 'curl -fsSL https://raw.githubusercontent.com/JulioFerrero/own-your-glass/main/scripts/install-app.sh | OYG_FORCE_UNSUPPORTED=1 sh'
 ```
 
-Apply hardening then runs on that TV (the status board shows "testing mode"). Nobody has run it
-on webOS 4–9 yet, so use a TV you can afford to reset, and keep the console's output: it is what
-tells us what differs. **Undo hardening** works on any firmware. The same line with
-`OYG_FORCE_UNSUPPORTED=0` turns testing mode off.
+Apply hardening then runs on that TV (the status board shows "testing mode"). Use a TV you can
+afford to reset, and keep the console's output: it is what tells us what differs. **Undo
+hardening** works on any firmware. The same line with `OYG_FORCE_UNSUPPORTED=0` turns testing
+mode off.
 
 Prefer the command line? [Install (on the TV)](#install-on-the-tv) below covers `install.sh`,
 `oyg harden` and the full flag set.
@@ -239,7 +240,7 @@ Everything in this toolkit is built from the same four low-level moves, because 
 
 ## Install (on the TV)
 
-**Supported firmware: webOS 10 (webOS 25).** That is the only firmware this toolkit has been run on, and `install.sh` and `oyg harden` refuse anything older. On webOS 4 an earlier version half-ran and left a TV that neither `oyg restore` nor a factory reset could undo (F52, F54). Python is no longer needed: the DNS sinkhole runs on the Node.js every webOS TV ships, JSON is read with BusyBox `awk`, and the scripts parse and run under the BusyBox 1.24 that webOS 4 is built with. `OYG_FORCE_UNSUPPORTED=1` lets an older webOS through, untested; for the app, use the [Quick start](#quick-start) line's testing mode. `oyg restore` works on any firmware.
+**Supported firmware: webOS 10 (webOS 25) and newer, webOS 4 and webOS 3** (each run on hardware: harden, restart, Undo; see [docs/WEBOS-3-4.md](docs/WEBOS-3-4.md)). `install.sh` and `oyg harden` refuse webOS 5–9, which nobody has run it on. On webOS 4 an earlier version half-ran and left a TV that neither `oyg restore` nor a factory reset could undo (F52, F54). Python is no longer needed: the DNS sinkhole runs on the Node.js every webOS TV ships, JSON is read with BusyBox `awk`, and the scripts parse and run under the BusyBox 1.24 that webOS 4 is built with. `OYG_FORCE_UNSUPPORTED=1` lets webOS 5–9 through, untested; for the app, use the [Quick start](#quick-start) line's testing mode. `oyg restore` works on any firmware.
 
 Pick whichever path is easier. **(A)** runs entirely on the TV; **(B)** lets you review the repo on your computer first.
 
@@ -353,7 +354,7 @@ risky behaviour. **Read the linked findings in `docs/FINDINGS.md` first.**
 
 | Flag | Effect | What can break |
 |------|--------|----------------|
-| `OYG_FORCE_UNSUPPORTED=1` | lets `install.sh` and `oyg harden` run on a webOS older than 10, which this toolkit has never been run on. The file `/var/lib/own-your-glass/allow-unsupported` (testing mode, written by the [Quick start](#quick-start) line with this flag) does the same for the app and the boot hook; `OYG_FORCE_UNSUPPORTED=0` overrides it | anything: module paths, app IDs and BusyBox behaviour differ on older firmware |
+| `OYG_FORCE_UNSUPPORTED=1` | lets `install.sh` and `oyg harden` run on webOS 5–9, which this toolkit has never been run on. The file `/var/lib/own-your-glass/allow-unsupported` (testing mode, written by the [Quick start](#quick-start) line with this flag) does the same for the app and the boot hook; `OYG_FORCE_UNSUPPORTED=0` overrides it | anything: module paths, app IDs and BusyBox behaviour differ on older firmware |
 | `OYG_AGGRESSIVE=1` (services) | also stops `iot-client` + `pushclient` (luna-launched AWS IoT MQTT + LG push channel; `systemctl stop` is a no-op for the actual process, so the module `kill`s it and re-kills on every boot) | ThinQ app, voice control, push notifications; may be re-spawned on demand by `ls-hubd` (boot hook is best-effort, not permanent) |
 | `OYG_AGGRESSIVE=1` (perms) | chmods webOSbrew hbchannel + Google Home runtime | webOSbrew updates, Google Home on TV |
 | `OYG_AGGRESSIVE=1` (remoteone) | chmods `/mnt/lg/cmn_data` from 0777 to 0755 | vendor apps that rely on that directory being world-writable |
@@ -400,6 +401,8 @@ The full list, with how each limit was verified, is in
   module that addresses it and how well.
 - [docs/VERIFICATION-REPORT.md](docs/VERIFICATION-REPORT.md) — the independent verification
   report on the TV (redacted for publication).
+- [docs/WEBOS-3-4.md](docs/WEBOS-3-4.md) — webOS 3 and 4: the TVs it was run on, what differs
+  from webOS 10 and what does not work there.
 
 ---
 
