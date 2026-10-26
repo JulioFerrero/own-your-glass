@@ -85,13 +85,13 @@ oyg_unit_query() {
 }
 
 # oyg_unit_stop <unit> / oyg_unit_start <unit> — through `run`, so a dry run
-# only prints. As with systemctl, stopping a stopped upstart job (or starting
-# a running one) succeeds.
+# only prints (also on a box with no init system). As with systemctl,
+# stopping a stopped upstart job (or starting a running one) succeeds.
 oyg_unit_stop() {
     case $(oyg_init) in
         systemd) run systemctl stop "$1" ;;
         upstart) _oyg_upstart stop "$1" inactive ;;
-        *) return 1 ;;
+        *) [ "$OYG_DRY_RUN" = "1" ] && printf 'DRY-RUN: stop %s\n' "$1" ;;
     esac
 }
 
@@ -99,7 +99,7 @@ oyg_unit_start() {
     case $(oyg_init) in
         systemd) run systemctl start "$1" ;;
         upstart) _oyg_upstart start "$1" active ;;
-        *) return 1 ;;
+        *) [ "$OYG_DRY_RUN" = "1" ] && printf 'DRY-RUN: start %s\n' "$1" ;;
     esac
 }
 

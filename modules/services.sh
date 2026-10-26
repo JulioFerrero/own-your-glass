@@ -143,27 +143,21 @@ _mod_services_drop_kill() {
 }
 
 # _mod_services_unit_present <unit>
-#   prints "1" if the unit is known to this systemd, "0" otherwise.
-#   Accepts the full unit name (may include `.service`, `.timer`, etc.).
+#   prints "1" if this TV has the unit (systemd) or its job (upstart),
+#   "0" otherwise. Accepts the full unit name (`.service`, `.socket`).
 _mod_services_unit_present() {
     unit=$1
-    if [ "$OYG_DRY_RUN" = "1" ]; then
+    if [ "$OYG_DRY_RUN" = "1" ] || oyg_unit_present "$unit"; then
         printf '1\n'
-        return 0
+    else
+        printf '0\n'
     fi
-    if systemctl list-unit-files 2>/dev/null \
-        | awk '{print $1}' | grep -Fxq -- "$unit"; then
-        printf '1\n'
-        return 0
-    fi
-    printf '0\n'
-    return 0
 }
 
 # _mod_services_query <unit> <what>
 #   Print one cleaned line for `is-active` or `is-enabled`. Strips
 #   whitespace and collapses any multi-line response to a single token.
-#   Falls back to "unknown" when systemctl exits non-zero.
+#   "unknown" when there is no answer.
 _mod_services_query() {
     unit=$1
     what=$2
@@ -175,12 +169,7 @@ _mod_services_query() {
         esac
         return 0
     fi
-    out=$(systemctl "$what" "$unit" 2>/dev/null | tr -d '[:space:]')
-    if [ -z "$out" ]; then
-        printf 'unknown\n'
-    else
-        printf '%s\n' "$out"
-    fi
+    oyg_unit_query "$unit" "$what"
 }
 
 # _mod_services_pids_for <process>
@@ -212,15 +201,11 @@ _mod_services_pids_for() {
 }
 
 # _mod_services_stop_unit <unit>
-#   systemctl stop <unit>. Echoes nothing; returns 0 on success.
+#   Stop <unit> (systemd) or its job (upstart). Returns 0 on success.
 _mod_services_stop_unit() {
     unit=$1
     [ -z "$unit" ] && return 0
-    if [ "$OYG_DRY_RUN" = "1" ]; then
-        printf 'DRY-RUN: systemctl stop %s\n' "$unit"
-        return 0
-    fi
-    systemctl stop "$unit" 2>/dev/null
+    oyg_unit_stop "$unit" 2>/dev/null
 }
 
 # _mod_services_kill_process <process>
@@ -274,10 +259,10 @@ mod_services_harden() {
         warn "aggressive mode OFF (set OYG_AGGRESSIVE=1 to also block: iot-client, pushclient)"
     fi
 
-    have systemctl || [ "$OYG_DRY_RUN" = "1" ] \
-        || { err "systemctl not found"; return 1; }
-    if ! have systemctl && [ "$OYG_DRY_RUN" = "1" ]; then
-        warn "systemctl not found — dry-run will simulate unit states (inactive)"
+    [ "$(oyg_init)" != none ] || [ "$OYG_DRY_RUN" = "1" ] \
+        || { err "neither systemctl nor initctl found"; return 1; }
+    if [ "$(oyg_init)" = none ] && [ "$OYG_DRY_RUN" = "1" ]; then
+        warn "neither systemctl nor initctl found — dry-run will simulate unit states (inactive)"
     fi
     warn "services: enforcement is 'stop unit + kill process + re-apply on every boot' (systemctl mask is impossible on this device: read-only /etc)"
 
@@ -372,8 +357,8 @@ mod_services_harden() {
 
 mod_services_restore() {
     require_root
-    have systemctl || [ "$OYG_DRY_RUN" = "1" ] \
-        || { err "systemctl not found"; return 1; }
+    [ "$(oyg_init)" != none ] || [ "$OYG_DRY_RUN" = "1" ] \
+        || { err "neither systemctl nor initctl found"; return 1; }
 
     # Every spec, aggressive ones included: a plain restore after an
     # OYG_AGGRESSIVE=1 harden must undo those too.
@@ -403,7 +388,7 @@ mod_services_restore() {
             start_reason="LG starts it at boot"
         fi
         if [ -n "$start_reason" ] && [ "$(_mod_services_unit_present "$unit")" = "1" ]; then
-            if run systemctl start "$unit" 2>/dev/null; then
+            if oyg_unit_start "$unit" 2>/dev/null; then
                 ok "services: $id unit <$unit> started ($start_reason)"
             else
                 warn "services: start $unit failed (LG starts it at the next boot)"
@@ -433,8 +418,8 @@ mod_services_restore() {
 }
 
 mod_services_status() {
-    have systemctl || [ "$OYG_DRY_RUN" = "1" ] \
-        || { print_status N/A "systemctl not available"; return; }
+    [ "$(oyg_init)" != none ] || [ "$OYG_DRY_RUN" = "1" ] \
+        || { print_status N/A "neither systemctl nor initctl available"; return; }
     applied=$(state_get "services.applied")
 
     for spec in $(_mod_services_active_specs); do
