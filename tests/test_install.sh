@@ -9,7 +9,7 @@ _install() {
     PATH=$T_STUBS:/bin:/usr/bin
     stub id 'echo 0'
     stub node
-    stub ip 'echo "default via 192.168.4.1 dev wlan0"'
+    stub ip 'echo "default via 192.168.1.1 dev wlan0"'
     OYG_DST=$T_TMP/dst INITD=$T_TMP/initd OYG_FORCE_UNSUPPORTED=1 \
         sh "$OYG_SRC/install.sh" >"$T_TMP/install.out" 2>&1 \
         || fail "install failed: $(cat "$T_TMP/install.out")"
