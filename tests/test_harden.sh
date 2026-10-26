@@ -50,3 +50,18 @@ test_apps_harden_creates_the_list_dir_when_missing() {
     [ -d /var/preferences/com.webos.applicationManager/blockedSystemAppList ] \
         || fail "dir not created: $(cat "$T_TMP/out")"
 }
+
+# A TV with no app list at all (webOS 3.9 65UJ6300): Undo must take away the
+# list and the folder harden created, not copy the "no original" note there.
+test_apps_undo_removes_a_list_that_did_not_exist() {
+    in_container || skip "needs a throwaway container"
+    rm -rf /var/preferences/com.webos.applicationManager
+    mkdir -p /var/preferences/com.webos.applicationManager /usr/palm/applications/com.webos.app.adoverlay
+    stub id 'echo 0'
+    stub luna-send 'echo "{\"returnValue\":true}"'
+    load_module apps
+    mod_apps_harden >/dev/null 2>&1
+    [ -f /var/preferences/com.webos.applicationManager/blockedSystemAppList/ESP.json ] || fail "harden wrote no list"
+    mod_apps_restore >"$T_TMP/out" 2>&1
+    assert_eq "$(ls -A /var/preferences/com.webos.applicationManager)" ""
+}

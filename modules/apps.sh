@@ -259,6 +259,8 @@ mod_apps_harden() {
         elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
             err "apps: cannot create $APPS_DIR"
             return 1
+        else
+            state_put "apps.dir_created" "$APPS_DIR"
         fi
     fi
     region=$(_mod_apps_region_from_path "$target")
@@ -420,7 +422,8 @@ mod_apps_restore() {
     else
         # Sentinel backup means "no original existed at harden time":
         # remove the live file instead of copying anything over it.
-        if head -n 1 "$backup" 2>/dev/null | grep -q '^SENTINEL=absent'; then
+        # The sentinel's first line is a comment: look at the whole file.
+        if grep -q '^SENTINEL=absent' "$backup" 2>/dev/null; then
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: rm -f %s\n' "$target" >&2
             elif run rm -f "$target" 2>/dev/null; then
@@ -442,6 +445,17 @@ mod_apps_restore() {
             fi
         fi
     fi
+
+    # The folder harden made, once empty again.
+    created=$(state_get "apps.dir_created")
+    if [ -n "$created" ] && [ -d "$created" ] && [ -z "$(ls -A "$created" 2>/dev/null)" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: rmdir %s\n' "$created" >&2
+        elif run rmdir "$created" 2>/dev/null; then
+            ok "apps: removed $created (harden created it)"
+        fi
+    fi
+    state_drop "apps.dir_created"
 
     state_drop "apps.path"
     state_drop "apps.region"
