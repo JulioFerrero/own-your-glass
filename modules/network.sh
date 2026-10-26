@@ -32,16 +32,40 @@ LG_HARDCODED_IPS="156.147.69.32 165.244.62.249 165.244.99.174"
 # helpers
 # -----------------------------------------------------------------------------
 
-# Resolve a domain to an A record using libc (getent), fall back to nslookup
-# (which bypasses /etc/hosts on this device — see FINDINGS.md).
+# Resolve a domain to its first public IPv4 address over DNS. Not getent:
+# layer 1 answers every blocked name from /etc/hosts with 0.0.0.0 or ::1,
+# and blackholing those (::1 once got through) only clutters the routing
+# table. Sinkhole, loopback and private answers are dropped.
 _mod_network_resolve() {
-    domain=$1
-    ip=$(getent hosts "$domain" 2>/dev/null | awk 'NR==1{print $1}')
-    if [ -z "$ip" ] && have nslookup; then
-        ip=$(nslookup "$domain" 2>/dev/null \
-            | awk '/^Address: / && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2; exit}')
-    fi
-    printf '%s\n' "$ip"
+    have nslookup || return 0
+    nslookup "$1" 2>/dev/null | awk '
+        /^Address: / && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ \
+            && $2 !~ /^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {
+            print $2; exit
+        }'
+}
+
+# _mod_network_layer3_strays — drop blackholes for the sinkhole addresses
+# (::1, ::, 0.0.0.0) that older versions added from /etc/hosts answers;
+# they were never recorded, so restore could not remove them. Copies can
+# stack (seen: three of ::1), so delete until none is left.
+_mod_network_layer3_strays() {
+    for r in 0.0.0.0 ::1 ::; do
+        case "$r" in *:*) fam=-6 ;; *) fam=-4 ;; esac
+        n=0
+        while [ $n -lt 10 ] && ip $fam route show type blackhole 2>/dev/null \
+            | awk -v r="$r" '$2 == r { f = 1 } END { exit !f }'; do
+            if [ "$OYG_DRY_RUN" = "1" ]; then
+                printf 'DRY-RUN: ip %s route del blackhole %s\n' "$fam" "$r"
+                break
+            fi
+            ip $fam route del blackhole "$r" 2>/dev/null \
+                || ip $fam route del blackhole "$r" dev lo 2>/dev/null || break
+            n=$((n + 1))
+        done
+        [ $n -gt 0 ] && ok "network: layer3 — removed $n stray blackhole route(s) for $r (added by an older version)"
+    done
+    return 0
 }
 
 # Echo the body of a blocklist file (SAFE only / STRICT only / all),
@@ -105,6 +129,15 @@ _mod_network_hosts_is_bind() {
     return 1
 }
 
+# Return 0 if the top mount on /etc/hosts is our generated file. mountinfo
+# lists mounts in order, so the last line for a path is the one in effect;
+# field 4 is the source path. Anything else (webOSbrew binds its own hosts
+# file when its "block updates" option is on) is not ours to remove.
+_mod_network_hosts_ours() {
+    awk -v t="$HOSTS_TARGET" '$5 == t { r = $4 } END { exit (r ~ /own-your-glass\/hosts$/) ? 0 : 1 }' \
+        /proc/self/mountinfo 2>/dev/null
+}
+
 _mod_network_default_gw() {
     ip route show default 2>/dev/null \
         | awk '/^default/ { for (i=1;i<=NF;i++) if ($i == "via") { print $(i+1); exit } }'
@@ -145,11 +178,16 @@ mod_network_layer1_harden() {
         return 0
     fi
 
-    if _mod_network_hosts_is_bind; then
+    # /etc/hosts is 0644 on a stock TV; the toolkit's umask (077) would make
+    # the bound copy root-only.
+    chmod 0644 "$HOSTS_GEN" 2>/dev/null
+    if _mod_network_hosts_ours; then
         ok "network: layer1 — /etc/hosts already bind-mounted; re-binding in place"
         if ! umount "$HOSTS_TARGET" 2>/dev/null; then
             warn "network: layer1 — umount existing bind failed; continuing with mount"
         fi
+    elif _mod_network_hosts_is_bind; then
+        ok "network: layer1 — /etc/hosts carries another bind (webOSbrew?); ours goes on top and restore lifts only ours"
     fi
 
     if mount --bind "$HOSTS_GEN" "$HOSTS_TARGET" 2>/dev/null; then
@@ -163,16 +201,27 @@ mod_network_layer1_harden() {
 
 mod_network_layer1_restore() {
     [ "$OYG_DRY_RUN" = "1" ] || require_root
-    if _mod_network_hosts_is_bind; then
+    l1_rc=0
+    if _mod_network_hosts_ours; then
         if [ "$OYG_DRY_RUN" = "1" ]; then
             printf 'DRY-RUN: umount %s\n' "$HOSTS_TARGET"
         else
-            umount "$HOSTS_TARGET" 2>/dev/null \
-                && ok "network: layer1 — umounted $HOSTS_TARGET" \
-                || warn "network: layer1 — umount failed"
+            # Only our binds (an older version could stack copies); a
+            # webOSbrew bind underneath stays.
+            n=0
+            while [ "$n" -lt 5 ] && _mod_network_hosts_ours; do
+                umount "$HOSTS_TARGET" 2>/dev/null || break
+                n=$((n + 1))
+            done
+            if _mod_network_hosts_ours; then
+                warn "network: layer1 — umount failed"
+                l1_rc=1
+            else
+                ok "network: layer1 — umounted $HOSTS_TARGET"
+            fi
         fi
     else
-        ok "network: layer1 — /etc/hosts was not bind-mounted"
+        ok "network: layer1 — /etc/hosts was not bind-mounted by own-your-glass"
     fi
     if [ -f "$HOSTS_GEN" ]; then
         rm -f "$HOSTS_GEN" 2>/dev/null \
@@ -180,6 +229,7 @@ mod_network_layer1_restore() {
             || warn "network: layer1 — could not remove $HOSTS_GEN"
     fi
     state_drop "$HOSTS_BIND_KEY"
+    return $l1_rc
 }
 
 # -----------------------------------------------------------------------------
@@ -196,6 +246,10 @@ mod_network_layer2_harden() {
 
     targets=$PUBLIC_RESOLVERS
     [ "${OYG_NETWORK_STRICT:-0}" = "1" ] && targets="$targets $LG_HARDCODED_IPS"
+    # Kept across runs (a STRICT run then a plain one must still remove the
+    # STRICT routes); a blackhole that was there before we ever ran is not
+    # recorded, so restore leaves it.
+    ours=" $(state_get "$RESOLV_ROUTES_KEY") "
     added=""
     for r in $targets; do
         # NOTE: use `ip route show`, NOT `ip route get`. On this kernel
@@ -203,8 +257,10 @@ mod_network_layer2_harden() {
         # "RTNETLINK answers: Invalid argument" for blackhole routes, so a
         # `route get` check always reports "missing" (verified on device).
         if ip route show "$r" 2>/dev/null | grep -q blackhole; then
-            ok "network: layer2 — $r already blackholed"
-            added="$added $r"
+            case "$ours" in
+                *" $r "*) ok "network: layer2 — $r already blackholed" ;;
+                *) ok "network: layer2 — $r already blackholed (not by own-your-glass; restore leaves it)" ;;
+            esac
             continue
         fi
         if [ "$OYG_DRY_RUN" = "1" ]; then
@@ -219,7 +275,7 @@ mod_network_layer2_harden() {
             warn "network: layer2 — failed to add blackhole for $r"
         fi
     done
-    state_put "$RESOLV_ROUTES_KEY" "$added"
+    [ "$OYG_DRY_RUN" = "1" ] || state_put "$RESOLV_ROUTES_KEY" "$(printf '%s\n' $ours $added | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//')"
 
     # Layer 4 owns resolv.conf when it is on: at boot the file is already the
     # sink-only (fail-closed) bind-mount, and writing the gateway into it
@@ -231,6 +287,12 @@ mod_network_layer2_harden() {
         target=$RESOLV_TARGET
         if [ ! -e "$target" ]; then
             warn "network: layer2 — $target not present; cannot override"
+            return 0
+        fi
+        # A bind-mount here is layer 4's sink file: backing it up would make
+        # restore write the sink address into ConnMan's own file.
+        if awk -v a="$target" -v b="$(readlink -f "$target" 2>/dev/null)" '$5 == a || $5 == b { f = 1 } END { exit !f }' /proc/self/mountinfo 2>/dev/null; then
+            warn "network: layer2 — $target is bind-mounted (the DNS sink); override skipped"
             return 0
         fi
         if [ "$OYG_DRY_RUN" = "1" ]; then
@@ -267,6 +329,7 @@ mod_network_layer2_harden() {
 mod_network_layer2_restore() {
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     have ip || { err "network: ip missing"; return 1; }
+    l2_rc=0
     routes=$(state_get "$RESOLV_ROUTES_KEY")
     for r in $routes; do
         # NOTE: use `ip route show`, NOT `ip route get`. On this kernel
@@ -277,9 +340,12 @@ mod_network_layer2_restore() {
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: ip route del blackhole %s\n' "$r"
             else
-                ip route del blackhole "$r" 2>/dev/null \
-                    && ok "network: layer2 — removed blackhole $r" \
-                    || warn "network: layer2 — failed to del blackhole $r"
+                if ip route del blackhole "$r" 2>/dev/null; then
+                    ok "network: layer2 — removed blackhole $r"
+                else
+                    warn "network: layer2 — failed to del blackhole $r"
+                    l2_rc=1
+                fi
             fi
         else
             ok "network: layer2 — $r already not blackholed"
@@ -295,14 +361,16 @@ mod_network_layer2_restore() {
         else
             if cp "$bak" "$target" 2>/dev/null; then
                 ok "network: layer2 — restored $target from $bak"
+                rm -f "$bak" 2>/dev/null || true
+                state_drop "$RESOLV_BACKUP_KEY"
+                state_drop "$RESOLV_BACKUP_PATH_KEY"
             else
-                warn "network: layer2 — restore of $target failed"
+                warn "network: layer2 — restore of $target failed (backup kept at $bak)"
+                l2_rc=1
             fi
-            rm -f "$bak" 2>/dev/null || true
         fi
-        state_drop "$RESOLV_BACKUP_KEY"
-        state_drop "$RESOLV_BACKUP_PATH_KEY"
     fi
+    return $l2_rc
 }
 
 # -----------------------------------------------------------------------------
@@ -317,6 +385,15 @@ mod_network_layer3_harden() {
     }
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     have ip || { err "network: ip command missing"; return 1; }
+
+    # With the sink on, every blocked name already fails, and the IPs behind
+    # these names are CDN front-ends other apps share (Google, Akamai), so
+    # blackholing them would cut YouTube or Prime Video, not LG.
+    if [ "${OYG_DNS_RESOLVER:-0}" = "1" ]; then
+        mod_network_layer3_restore
+        ok "network: layer3 — not needed while layer 4 (the DNS sink) is on"
+        return 0
+    fi
 
     section=all
     [ "${OYG_NETWORK_STRICT:-0}" = "1" ] || section=safe
@@ -353,13 +430,16 @@ mod_network_layer3_harden() {
         done
     done <"$OYG_ROOT/.layer3.list"
     rm -f "$OYG_ROOT/.layer3.list" 2>/dev/null || true
+    _mod_network_layer3_strays
 
-    state_put "$ROUTES_KEY" "$added"
+    # Keep routes an earlier run recorded, so restore can still find them.
+    state_put "$ROUTES_KEY" "$(printf '%s\n' $(state_get "$ROUTES_KEY") $added | awk 'NF && !s[$0]++' | tr '\n' ' ')"
 }
 
 mod_network_layer3_restore() {
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     have ip || { err "network: ip missing"; return 1; }
+    l3_rc=0
     routes=$(state_get "$ROUTES_KEY")
     for r in $routes; do
         # NOTE: use `ip route show`, NOT `ip route get`. On this kernel
@@ -370,15 +450,20 @@ mod_network_layer3_restore() {
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: ip route del blackhole %s\n' "$r"
             else
-                ip route del blackhole "$r" 2>/dev/null \
-                    && ok "network: layer3 — removed blackhole $r" \
-                    || warn "network: layer3 — failed to del blackhole $r"
+                if ip route del blackhole "$r" 2>/dev/null; then
+                    ok "network: layer3 — removed blackhole $r"
+                else
+                    warn "network: layer3 — failed to del blackhole $r"
+                    l3_rc=1
+                fi
             fi
         else
             ok "network: layer3 — $r already not blackholed"
         fi
     done
     state_drop "$ROUTES_KEY"
+    _mod_network_layer3_strays
+    return $l3_rc
 }
 
 # -----------------------------------------------------------------------------
@@ -416,8 +501,8 @@ mod_network_layer4_harden() {
         return 0
     }
     [ "$OYG_DRY_RUN" = "1" ] || require_root
-    if ! command -v python3 >/dev/null 2>&1; then
-        warn "network: layer4 — python3 missing; cannot run the sinkhole"
+    if ! have node; then
+        warn "network: layer4 — node missing; cannot run the sinkhole"
         return 0
     fi
 
@@ -436,13 +521,44 @@ mod_network_layer4_harden() {
         warn "network: layer4 — dns.sh start failed (see $OYG_ROOT/dns.log)"
         return 1
     fi
+    _mod_network_variant_c_harden "$bin"
+}
+
+# Variant C is on: the patched ConnMan launcher is mounted, connmand runs
+# with -r (no DNS proxy), and the sink holds 127.0.0.1:53.
+_mod_network_variant_c_on() {
+    awk '$5 == "/etc/systemd/system/scripts/connman.sh" { f = 1 } END { exit !f }' /proc/self/mountinfo 2>/dev/null || return 1
+    [ "$(cat "$OYG_ROOT/dns.bind" 2>/dev/null)" = "127.0.0.1" ] || return 1
+    tr '\0' ' ' <"/proc/$(pidof connmand 2>/dev/null | awk '{ print $1 }')/cmdline" 2>/dev/null | grep -qE ' (-r|--nodnsproxy) ' || return 1
+    grep -q ' 0100007F:0035 ' /proc/net/udp 2>/dev/null
+}
+
+# OYG_DNS_VARIANT_C=1: switch ConnMan's own DNS proxy off and put the sink on
+# 127.0.0.1:53, so LG's services that ask ConnMan directly (F44) go through
+# the blocklist too. scripts/go-c.sh does it, with its rollback timer.
+_mod_network_variant_c_harden() {
+    [ "${OYG_DNS_VARIANT_C:-0}" = "1" ] || return 0
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: sh %s/go-c.sh (Variant C)\n' "$(dirname "$1")"
+        return 0
+    fi
+    if _mod_network_variant_c_on; then
+        ok "network: Variant C already on (ConnMan's DNS proxy off, the sink on 127.0.0.1:53)"
+        return 0
+    fi
+    warn "network: Variant C — restarting ConnMan with its DNS proxy off; Wi-Fi drops for 7-30 s"
+    if sh "$(dirname "$1")/go-c.sh" </dev/null; then
+        ok "network: Variant C on"
+    else
+        warn "network: Variant C did not go on and was rolled back (see $OYG_ROOT/go-c.log)"
+        return 1
+    fi
 }
 
 mod_network_layer4_restore() {
-    [ "${OYG_DNS_RESOLVER:-0}" = "1" ] && [ "$(state_get dns.applied)" != "1" ] && {
-        ok "network: layer4 — not running (state clean); nothing to revert"
-        return 0
-    }
+    # No state check: the auto-revert or the watchdog can drop dns.applied
+    # while the sink, the watchdog or Variant C still run. dns.sh stop is
+    # idempotent.
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     bin=$(_dns_bin) || return 0
     if [ "$OYG_DRY_RUN" = "1" ]; then
@@ -497,20 +613,24 @@ mod_network_harden() {
     state_put "network.ipblock" "${OYG_NETWORK_IPBLOCK:-0}"
     state_put "network.dns_override" "${OYG_DNS_OVERRIDE:-0}"
     state_put "network.dns_resolver" "${OYG_DNS_RESOLVER:-0}"
+    state_put "network.variant_c" "${OYG_DNS_VARIANT_C:-0}"
 }
 
 mod_network_restore() {
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     have ip || warn "network: ip missing — layer 2 + 3 routes cannot be removed (will leak until reboot)"
-    mod_network_layer4_restore
-    mod_network_layer3_restore
-    mod_network_layer2_restore
-    mod_network_layer1_restore
+    net_rc=0
+    mod_network_layer4_restore || net_rc=1
+    mod_network_layer3_restore || net_rc=1
+    mod_network_layer2_restore || net_rc=1
+    mod_network_layer1_restore || net_rc=1
     state_drop "network.applied"
     state_drop "network.strict"
     state_drop "network.ipblock"
     state_drop "network.dns_override"
     state_drop "network.dns_resolver"
+    state_drop "network.variant_c"
+    return $net_rc
 }
 
 mod_network_status() {
@@ -567,7 +687,9 @@ mod_network_status() {
     # Layer 3: only meaningful if state shows it was opted in.
     # We still verify reality if the state says it was applied.
     routes=$(state_get "$ROUTES_KEY")
-    if [ -z "$routes" ]; then
+    if [ -z "$routes" ] && [ "$(state_get network.dns_resolver)" = "1" ]; then
+        print_status N/A "network: layer3 — not needed while layer 4 (the DNS sink) is on"
+    elif [ -z "$routes" ]; then
         if [ "$(state_get "network.ipblock")" = "1" ]; then
             print_status PARTIAL "network: layer3 — opted in but no per-domain routes recorded"
         else

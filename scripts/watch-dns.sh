@@ -8,9 +8,9 @@
 # unfiltered.
 #
 # WHY THE TICK IS CHEAP (measured 2026-10-22): running dns.sh ensure and a
-# Python probe on every tick cost ~0.21 s of CPU, 1.4% of a core around the
-# clock. The tick is now one awk and one grep; ensure runs only when the
-# override is wrong, and Python only for the probe.
+# probe on every tick cost ~0.21 s of CPU, 1.4% of a core around the clock.
+# The tick is now one awk and one grep; ensure runs only when the override
+# is wrong, and node (~0.3 s) only for the probe.
 # NEVER signals, reloads or restarts connmand (guard refuses otherwise;
 # see the post-mortem in scripts/dns.sh).
 #
@@ -30,7 +30,6 @@ set -u
 OYG_HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$OYG_HERE/../lib/common.sh"
 
-PY=${PY:-python3}
 PROBE_INTERVAL=${OYG_WATCHDNS_INTERVAL:-15}
 PROBE_EVERY=${OYG_WATCHDNS_PROBE_EVERY:-8}
 RESTART_TRIES=${OYG_WATCHDNS_TRIES:-3}
@@ -55,35 +54,15 @@ ok_wd()   { ok "watch-dns: $*"; }
 warn_wd() { warn "watch-dns: $*"; }
 err_wd()  { err "watch-dns: $*"; }
 
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { type "$1" >/dev/null 2>&1; }
 
 # probe_resolver — exit 0 iff a well-formed DNS reply came back from the
 # sink. ANY reply counts: a blocked name answering 0.0.0.0/:: is healthy.
-# Falls back to "alive" when python3 is missing, so we never kill a
-# resolver we cannot actually test.
+# Falls back to "alive" when node is missing, so we never kill a resolver we
+# cannot actually test.
 probe_resolver() {
-    have "$PY" || return 0
-    "$PY" - "$DNS_BIND" "$DNS_PORT" "$PROBE_NAME" <<'PYEOF' 2>/dev/null
-import socket, struct, sys
-addr, port, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-tid = b"\xab\xcd"
-hdr = tid + b"\x01\x00" + struct.pack(">HHHH", 1, 0, 0, 0)
-qn = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
-pkt = hdr + qn + struct.pack(">HH", 1, 1)
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(2.0)
-try:
-    s.sendto(pkt, (addr, port))
-    data, _ = s.recvfrom(512)
-except Exception:
-    sys.exit(1)
-finally:
-    try:
-        s.close()
-    except Exception:
-        pass
-sys.exit(0 if len(data) >= 12 and data[0:2] == tid else 1)
-PYEOF
+    have node || return 0
+    node "$OYG_HERE/dnssink.js" --probe "$DNS_BIND" "$DNS_PORT" "$PROBE_NAME" 2>/dev/null
 }
 
 # resolver_pid_ok — the pid in dns.pid is alive AND is really our resolver.
@@ -118,12 +97,12 @@ restart_resolver() {
         # old socket is still held is what produced the EADDRNOTAVAIL loop.
         n=0
         while [ "$n" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
-            sleep 0.2
+            oyg_nap 0.2
             n=$((n + 1))
         done
         if kill -0 "$pid" 2>/dev/null; then
             kill -KILL "$pid" 2>/dev/null || true
-            sleep 0.5
+            oyg_nap 0.5
         fi
     fi
     "$OYG_HERE/dns.sh" start >/dev/null 2>&1 || true

@@ -9,24 +9,58 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DNS_SH=$HERE/dns.sh
 [ -r "$DNS_SH" ] || DNS_SH=$R/scripts/dns.sh
 LOG=$R/go-c.log
-# Cancel-flag: go-c.sh touches go-c.done on verified success. The timer is
-# a detached subshell that `kill` from a later run cannot reliably reach —
-# this check is what actually makes the rollback cancel.
-[ -f $R/go-c.done ] && exit 0
-printf '[%s] [rollback] starting\n' "$(date '+%H:%M:%S')" >> $LOG
+# say — one line to go-c.log and to stdout (the control app's console when
+# Undo hardening runs this).
+say() { printf '[%s] [rollback] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG"; }
+# online — the default route is up and a public name resolves the way the
+# TV's apps resolve it (glibc, through /etc/resolv.conf).
+online() {
+    ip route show default 2>/dev/null | grep -q '^default' || return 1
+    if type getent >/dev/null 2>&1; then
+        getent hosts github.com >/dev/null 2>&1
+    else
+        nslookup github.com >/dev/null 2>&1
+    fi
+}
+# go-c.done (verified success) cancels only go-c.sh's timer, which checks it
+# before calling us. Every other caller (dns.sh stop, oyg restore, a failed
+# go-c.sh) means it: once this ran, Variant C is off until go-c.sh runs again.
+rm -f "$R/go-c.done"
+say "starting"
+# The sink must let go of 127.0.0.1:53 before the stock connmand starts:
+# finding the port taken, connmand's proxy falls back to ::1, which does not
+# answer on this TV, and every lookup fails until a reboot.
+SP=$(cat "$R/dns.pid" 2>/dev/null)
+[ -n "$SP" ] && grep -q dnssink "/proc/$SP/cmdline" 2>/dev/null && kill "$SP" 2>/dev/null
+pkill -f 'dnssink\.' 2>/dev/null
+n=0
+while [ $n -lt 10 ] && grep -q ' 0100007F:0035 ' /proc/net/udp 2>/dev/null; do
+    sleep 1; n=$((n + 1))
+done
+[ $n -ge 10 ] && kill -9 $SP 2>/dev/null
 if awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
-    umount /etc/systemd/system/scripts/connman.sh && printf '[%s] [rollback] stock launcher restored\n' "$(date '+%H:%M:%S')" >> $LOG
+    umount /etc/systemd/system/scripts/connman.sh && say "stock launcher restored"
 fi
 rm -f $R/connman.sh.patched.mounted
 echo 127.0.0.2 > $R/dns.bind
 systemctl daemon-reload 2>/dev/null
+say "restarting connmand (stock; Wi-Fi drops for 7-30 s)"
+T0=$(date +%s)
 systemctl restart connman 2>/dev/null
-printf '[%s] [rollback] connmand restarted (stock)\n' "$(date '+%H:%M:%S')" >> $LOG
+say "connmand restarted (stock)"
 if [ "${ROLLBACK_NO_SINK:-0}" != "1" ]; then
-    pkill -f dnssink.py 2>/dev/null; sleep 1
     UP=$(awk -F= '$1 == "dns.upstream" { sub(/^[^=]*=/, ""); print; exit }' "$R/state" 2>/dev/null)
     env ${UP:+OYG_DNS_UPSTREAM=$UP} OYG_DNS_BIND=127.0.0.2 sh "$DNS_SH" start >> $LOG 2>&1
-    printf '[%s] [rollback] done — sink back on 127.0.0.2\n' "$(date '+%H:%M:%S')" >> $LOG
+    say "sink back on 127.0.0.2"
 else
-    printf '[%s] [rollback] done — sink left down (ROLLBACK_NO_SINK)\n' "$(date '+%H:%M:%S')" >> $LOG
+    say "sink left down (ROLLBACK_NO_SINK)"
+fi
+n=0
+while [ $n -lt 90 ] && ! online; do
+    sleep 1; n=$((n + 1))
+done
+if online; then
+    say "internet back online $(( $(date +%s) - T0 ))s after the ConnMan restart"
+else
+    say "WARN: internet still offline $(( $(date +%s) - T0 ))s after the ConnMan restart"
 fi

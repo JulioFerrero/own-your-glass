@@ -43,8 +43,7 @@ Environment flags (read by individual modules):
   OYG_AGGRESSIVE=1           enable risky modules (services-extra, perms,
                              remoteone chmod)
   OYG_FORCE_UNSUPPORTED=1    harden on a webOS older than 10, which this
-                             toolkit has never been run on (python3 is
-                             still required)
+                             toolkit has never been run on
   OYG_NETWORK_BLOCK=1        opt in to the network module (four layers)
   OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
   OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
@@ -199,16 +198,27 @@ run_modules() {
         fi
     fi
 
+    rc=0
     for m in $mods; do
-        load_module "$m" || continue
+        load_module "$m" || { [ "$action" = "restore" ] && rc=1; continue; }
         func="mod_${m}_${action}"
         if type "$func" >/dev/null 2>&1; then
             printf '\n== %s: %s ==\n' "$m" "$action"
-            "$func" || warn "module $m returned non-zero"
+            # <module>.wanted is what the boot hook re-applies: set by
+            # harden, dropped by restore, so Undo survives a reboot.
+            [ "$dry" = "1" ] || [ "$action" != "harden" ] || state_put "$m.wanted" 1
+            if ! "$func"; then
+                warn "module $m returned non-zero"
+                # A failed restore is reported (exit 1): uninstall.sh then
+                # keeps the backups instead of deleting them.
+                [ "$action" = "restore" ] && rc=1
+            fi
+            [ "$dry" = "1" ] || [ "$action" != "restore" ] || state_drop "$m.wanted"
         else
             warn "module $m has no $action function"
         fi
     done
+    return $rc
 }
 
 cmd_verify() {
@@ -249,7 +259,7 @@ main() {
         list)     cmd_list ;;
         status)   cmd_status "$@" ;;
         harden)   run_modules harden "$only" "$dry" ;;
-        restore)  run_modules restore "$only" "$dry" ;;
+        restore)  run_modules restore "$only" "$dry" || exit 1 ;;
         verify)   cmd_verify ;;
         ""|help|-h|--help) usage ;;
         *) err "unknown subcommand: $sub"; usage; exit 64 ;;

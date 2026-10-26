@@ -17,7 +17,7 @@ mod_remoteone_harden() {
     if [ -e "$REMOTEDEBUG" ]; then
         state_put "remoteone.gate.present" "1"
         warn "remoteone: $REMOTEDEBUG EXISTS — remote support gate is currently active"
-        warn "remoteone: run `oyg restore` only if you trust the vendor channel"
+        warn "remoteone: run 'oyg restore' only if you trust the vendor channel"
         warn "remoteone: this tool intentionally does NOT remove the gate (owners must decide)"
         return 0
     fi
@@ -27,11 +27,12 @@ mod_remoteone_harden() {
     if [ "${OYG_AGGRESSIVE:-0}" = "1" ]; then
         if [ -d "$CMN_DATA" ] && [ -w "$CMN_DATA" ]; then
             cur=$(stat -c '%a' "$CMN_DATA" 2>/dev/null || stat -f '%Lp' "$CMN_DATA" 2>/dev/null || echo unknown)
-            state_put "remoteone.cmndata.prev" "$cur"
+            # Once: a second aggressive harden would record our own 0755.
+            [ -n "$(state_get remoteone.cmndata.prev)" ] || state_put "remoteone.cmndata.prev" "$cur"
             run chmod 0755 "$CMN_DATA" && ok "remoteone: $CMN_DATA -> 0755 (was $cur)"
         else
             warn "remoteone: $CMN_DATA not writable"
-            state_put "remoteone.cmndata.prev" "not-writable"
+            [ -n "$(state_get remoteone.cmndata.prev)" ] || state_put "remoteone.cmndata.prev" "not-writable"
         fi
     else
         warn "remoteone: chmod $CMN_DATA requires OYG_AGGRESSIVE=1"
@@ -43,9 +44,12 @@ mod_remoteone_restore() {
     state_drop "remoteone.gate.present"
     state_drop "remoteone.applied"
     prev=$(state_get "remoteone.cmndata.prev")
-    if [ -n "$prev" ] && [ "$prev" != "not-writable" ] && [ -d "$CMN_DATA" ]; then
-        run chmod "$prev" "$CMN_DATA" && ok "remoteone: $CMN_DATA restored to $prev"
+    case "$prev" in ""|not-writable|unknown) state_drop "remoteone.cmndata.prev"; return 0 ;; esac
+    if [ -d "$CMN_DATA" ] && ! run chmod "$prev" "$CMN_DATA"; then
+        warn "remoteone: could not chmod $prev $CMN_DATA (kept in state)"
+        return 1
     fi
+    [ -d "$CMN_DATA" ] && ok "remoteone: $CMN_DATA restored to $prev"
     state_drop "remoteone.cmndata.prev"
 }
 

@@ -36,15 +36,14 @@
 #   dns.upstream=<ip>      real upstream the resolver forwards to
 #
 # Required:
-#   python3 on PATH. All subcommands are idempotent (re-running is safe).
+#   node on PATH (every webOS TV ships it). All subcommands are idempotent.
 #   The auto-revert pid lives at $OYG_ROOT/dns-autorevert.pid.
 
 set -u
 
 OYG_HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-# scripts/dnssink.py and watch-dns.sh live in the same dir as this script.
-PY=python3
-RESOLVER="$OYG_HERE/dnssink.py"
+# scripts/dnssink.js and watch-dns.sh live in the same dir as this script.
+RESOLVER="$OYG_HERE/dnssink.js"
 WATCHDOG="$OYG_HERE/watch-dns.sh"
 
 # lib/common.sh lives at $OYG_HERE/../lib/common.sh. When sourced under
@@ -76,7 +75,7 @@ ok_dns()  { ok "dns: $*"; }
 warn_dns(){ warn "dns: $*"; }
 err_dns() { err "dns: $*"; }
 
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { type "$1" >/dev/null 2>&1; }
 
 require_root() {
     if [ "$(id -u 2>/dev/null)" != "0" ]; then
@@ -109,7 +108,7 @@ _dns_upstream_valid() {
 }
 
 # Discover the UPSTREAM resolver (the server the sink forwards to; NOT something we
-# ever point connmand at). Mirrors dnssink.py's discovery: connectionmanager
+# ever point connmand at). The sink's upstream comes from here: connectionmanager
 # getStatus -> dns1, then dns2. Do NOT re-introduce "the first IPv4 in the
 # blob" — that yields the netmask 255.255.255.0, which is not a resolver.
 # Every candidate is passed through _dns_upstream_valid; if all sources fail
@@ -249,6 +248,9 @@ _resolv_content_ok() {
 # after mounting). Read-only, its write fails with EROFS. Ours go to
 # $RESOLV_SRC directly, which is not the mount, and still show through.
 _resolv_mount() {
+    # 0644 like ConnMan's own file; the toolkit's umask (077) would make the
+    # bound copy root-only.
+    chmod 0644 "$RESOLV_SRC" 2>/dev/null
     mount --bind "$RESOLV_SRC" "$RESOLV_TARGET" 2>/dev/null || return 1
     _resolv_lock || warn_dns "could not make the resolv.conf override read-only — connmand can still overwrite it"
     return 0
@@ -285,10 +287,12 @@ _write_resolv_src() {
         return 1
     }
     if cmp -s "$want" "$RESOLV_SRC" 2>/dev/null; then
+        chmod 0644 "$RESOLV_SRC" 2>/dev/null
         rm -f "$want" 2>/dev/null || true
         return 0
     fi
     if cat "$want" >"$RESOLV_SRC" 2>/dev/null; then
+        chmod 0644 "$RESOLV_SRC" 2>/dev/null
         rm -f "$want" 2>/dev/null || true
         return 0
     fi
@@ -379,7 +383,7 @@ _spawn_watchdog() {
     rm -f "$WATCHDOG_PID" 2>/dev/null || true
     nohup sh "$WATCHDOG" </dev/null >>"$OYG_ROOT/dns.log" 2>&1 &
     # nohup returns; let the daemon write its own pid file.
-    sleep 0.3
+    oyg_nap 0.3
     ok_dns "watchdog spawned"
 }
 
@@ -418,7 +422,7 @@ EOF
 cmd_start() {
     require_root
     [ -r "$RESOLVER" ] || { err_dns "resolver not found at $RESOLVER"; return 1; }
-    have $PY || { err_dns "python3 missing from PATH"; return 1; }
+    have node || { err_dns "node missing from PATH"; return 1; }
 
     if resolver_alive; then
         ok_dns "resolver already running on $DNS_BIND:$DNS_PORT (pid $(cat "$STATE_PID" 2>/dev/null))"
@@ -442,14 +446,14 @@ cmd_start() {
 
         ensure_dirs
         : >>"$AUDIT_LOG"
-        nohup "$PY" "$RESOLVER" \
+        nohup node "$RESOLVER" \
             --bind "$DNS_BIND" --port "$DNS_PORT" \
             --upstream "$upstream" \
             --hosts "$HOSTS_FILE" \
             --audit "$AUDIT_LOG" \
             >>"$OYG_ROOT/dns.log" 2>&1 &
         pid=$!
-        sleep 0.4
+        oyg_nap 0.4
         if ! kill -0 "$pid" 2>/dev/null; then
             err_dns "resolver process exited immediately (check $OYG_ROOT/dns.log)"
             return 1
@@ -458,7 +462,7 @@ cmd_start() {
         ok_dns "resolver started: $DNS_BIND:$DNS_PORT pid=$pid upstream=$upstream"
 
         # Prove it answers BEFORE pointing resolv.conf at it. Early in boot
-        # python can take seconds to bind: a single probe 0.4 s after the
+        # the resolver can take seconds to bind: a single probe 0.4 s after the
         # spawn found nothing listening, and the boot carried on with no
         # resolver. So keep probing for up to 10 s while it is alive.
         n=0
@@ -536,6 +540,8 @@ cmd_apply() {
     fi
 
     state_put dns.applied "1"
+    # Turned on stays on across reboots (see cmd_stop).
+    [ -z "$(state_get network.dns_resolver)" ] || state_put network.dns_resolver 1
 
     if ! _verify_default_path; then
         err_dns "default-path DNS check FAILED after mounting — reverting immediately"
@@ -653,26 +659,14 @@ cmd_revert() {
     return $rv
 }
 
+# _variant_c_mounted — the patched connman launcher (go-c.sh) is in place.
+_variant_c_mounted() {
+    awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo 2>/dev/null
+}
+
 cmd_stop() {
     require_root
-
-    # Variant C is active? Undo it first. With connmand proxy-less and the
-    # sink on 127.0.0.1, a bare stop would leave resolv.conf pointing at a
-    # dead 127.0.0.1 — and connmand would NOT resume its own proxy, because
-    # it never restarts itself here (see the post-mortem). rollback-c.sh
-    # restores the stock launcher and restarts connmand; the sink it would
-    # restart is not wanted — we are stopping everything — hence the knob.
-    if [ "$(cat "$OYG_ROOT/dns.bind" 2>/dev/null)" = "127.0.0.1" ] \
-        && awk '$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
-        rb="$OYG_HERE/rollback-c.sh"
-        [ -r "$rb" ] || rb="$OYG_ROOT/rollback-c.sh"
-        if [ -r "$rb" ]; then
-            ROLLBACK_NO_SINK=1 sh "$rb" || true
-            ok_dns "Variant C undone (stock connman launcher restored)"
-        else
-            warn_dns "dns.bind says C is active but rollback-c.sh is missing — connmand stays proxy-less until reboot"
-        fi
-    fi
+    stop_rc=0
 
     # Stop watchdog.
     if [ -r "$WATCHDOG_PID" ]; then
@@ -694,7 +688,7 @@ cmd_stop() {
             kill -TERM "$pid" 2>/dev/null \
                 && ok_dns "TERM $pid" \
                 || warn_dns "could not TERM resolver pid=$pid"
-            sleep 0.4
+            oyg_nap 0.4
             if kill -0 "$pid" 2>/dev/null; then
                 kill -KILL "$pid" 2>/dev/null \
                     && ok_dns "KILL $pid" \
@@ -706,9 +700,41 @@ cmd_stop() {
         ok_dns "no resolver pid file"
     fi
 
+    # Variant C is undone LAST, once the sink has let go of 127.0.0.1:53.
+    # The stock connmand that rollback-c.sh starts binds its DNS proxy
+    # there; finding the port taken, it fell back to ::1, which does not
+    # answer on this TV, and wrote "nameserver ::1": no DNS at all until a
+    # reboot (seen 2026-10-26, when this ran first).
+    if _variant_c_mounted; then
+        n=0
+        while [ "$n" -lt 25 ] && grep -q ' 0100007F:0035 ' /proc/net/udp 2>/dev/null; do
+            oyg_nap 0.2
+            n=$((n + 1))
+        done
+        rb="$OYG_HERE/rollback-c.sh"
+        [ -r "$rb" ] || rb="$OYG_ROOT/rollback-c.sh"
+        if [ -r "$rb" ]; then
+            ROLLBACK_NO_SINK=1 sh "$rb" || true
+        fi
+        if _variant_c_mounted; then
+            warn_dns "Variant C still active (patched connman launcher mounted) — connmand stays proxy-less until reboot"
+            stop_rc=1
+        else
+            ok_dns "Variant C undone (stock connman launcher restored)"
+        fi
+    fi
+    # dns.bind exists only because of Variant C (go-c.sh writes it); without
+    # it every script uses 127.0.0.2, the stock value.
+    rm -f "$OYG_ROOT/dns.bind" "$OYG_ROOT/go-c.done" 2>/dev/null
+
     state_drop dns.applied
     state_drop dns.upstream
+    # Turned off stays off: the boot hook starts the sink only while
+    # network.dns_resolver=1 (the app's "DNS blocking: turn off", Undo,
+    # Restore network and oyg restore all come through here).
+    [ -z "$(state_get network.dns_resolver)" ] || state_put network.dns_resolver 0
     ok_dns "stopped"
+    return $stop_rc
 }
 
 cmd_status() {

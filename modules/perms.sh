@@ -43,7 +43,9 @@ mod_perms_harden() {
             continue
         fi
         cur=$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null || echo unknown)
-        state_put "perms.${path}.prev" "$cur"
+        # The mode before the first harden; later runs (every boot) must
+        # not record the mode we set as the original.
+        [ -n "$(state_get "perms.${path}.prev")" ] || state_put "perms.${path}.prev" "$cur"
         if run chmod "$mode" "$path"; then
             ok "perms: $path -> $mode (was $cur)"
         else
@@ -59,7 +61,9 @@ mod_perms_harden() {
             continue
         fi
         cur=$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null || echo unknown)
-        state_put "perms.${path}.prev" "$cur"
+        # The mode before the first harden; later runs (every boot) must
+        # not record the mode we set as the original.
+        [ -n "$(state_get "perms.${path}.prev")" ] || state_put "perms.${path}.prev" "$cur"
         run chmod "$mode" "$path" \
             && ok "perms: dir $path -> $mode (was $cur)" \
             || err "perms: chmod $mode $path failed"
@@ -69,7 +73,7 @@ mod_perms_harden() {
         for f in /media/system/apps/usr/palm/services/com.webos.ghp.runtime/lib/*; do
             [ -e "$f" ] || continue
             cur=$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo unknown)
-            state_put "perms.${f}.prev" "$cur"
+            [ -n "$(state_get "perms.${f}.prev")" ] || state_put "perms.${f}.prev" "$cur"
             run chmod 0644 "$f" \
                 && ok "perms: $f -> 0644 (was $cur)" \
                 || warn "perms: chmod 0644 $f failed"
@@ -77,25 +81,32 @@ mod_perms_harden() {
     fi
 }
 
+# Restore needs no OYG_AGGRESSIVE: it only puts back the modes harden
+# recorded, and without them the boot hook kept re-applying perms.
 mod_perms_restore() {
     require_root
-    if [ "${OYG_AGGRESSIVE:-0}" != "1" ]; then
-        warn "perms: OYG_AGGRESSIVE!=1, nothing to restore"
-        return 0
-    fi
-
     [ -r "$OYG_STATE" ] || return 0
-    awk -F= '$1 ~ /^perms\./ && $1 ~ /\.prev$/ {print $1}' "$OYG_STATE" | while IFS= read -r key; do
-        [ -z "$key" ] && continue
+    prc=0
+    keys=$(awk -F= '$1 ~ /^perms\./ && $1 ~ /\.prev$/ {print $1}' "$OYG_STATE")
+    for key in $keys; do
         path=$(printf '%s' "$key" | sed 's/^perms\.//; s/\.prev$//')
         prev=$(state_get "$key")
-        [ -z "$prev" ] && continue
+        case "$prev" in
+            ""|unknown) state_drop "$key"; continue ;;
+        esac
         if [ -e "$path" ]; then
-            run chmod "$prev" "$path" && ok "perms: $path restored to $prev"
+            if run chmod "$prev" "$path"; then
+                ok "perms: $path restored to $prev"
+            else
+                warn "perms: could not chmod $prev $path (kept in state)"
+                prc=1
+                continue
+            fi
         fi
         state_drop "$key"
     done
     state_drop "perms.applied"
+    return $prc
 }
 
 # _mod_perms_not_writable <path>

@@ -101,7 +101,10 @@ _mod_launcher_settings_harden() {
             continue
         fi
         if [ "$OYG_DRY_RUN" != "1" ] && ! grep -q "^$cat:$key=" "$LAUNCHER_SETTINGS_BACKUP" 2>/dev/null; then
-            printf '%s:%s=%s\n' "$cat" "$key" "$cur" >>"$LAUNCHER_SETTINGS_BACKUP"
+            printf '%s:%s=%s\n' "$cat" "$key" "$cur" >>"$LAUNCHER_SETTINGS_BACKUP" 2>/dev/null || {
+                warn "launcher: cannot record $cat.$key in $LAUNCHER_SETTINGS_BACKUP — left as $cur"
+                continue
+            }
         fi
         if [ "$cur" = "$want" ]; then
             ok "launcher: $cat.$key already $want"
@@ -115,8 +118,11 @@ _mod_launcher_settings_harden() {
     done
 }
 
+# Settings that went back leave the backup (the next harden records what
+# they are then); ones that could not be set back stay for the next restore.
 _mod_launcher_settings_restore() {
     [ -r "$LAUNCHER_SETTINGS_BACKUP" ] || { ok "launcher: no saved settings"; return 0; }
+    left=$(mktemp 2>/dev/null) || { warn "launcher: no temp file — settings not restored"; return 1; }
     while IFS= read -r spec; do
         [ -n "$spec" ] || continue
         cat=${spec%%:*}; rest=${spec#*:}; key=${rest%%=*}; val=${rest#*=}
@@ -125,9 +131,20 @@ _mod_launcher_settings_restore() {
         elif oyg_setting_set "$cat" "$key" "$val"; then
             ok "launcher: $cat.$key restored to $val"
         else
-            warn "launcher: could not restore $cat.$key"
+            warn "launcher: could not restore $cat.$key (kept in $LAUNCHER_SETTINGS_BACKUP)"
+            printf '%s\n' "$spec" >>"$left"
         fi
     done <"$LAUNCHER_SETTINGS_BACKUP"
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        rm -f "$left"
+    elif [ -s "$left" ]; then
+        mv -f "$left" "$LAUNCHER_SETTINGS_BACKUP"
+        return 1
+    else
+        rm -f "$left"
+        oyg_retire_backup "$LAUNCHER_SETTINGS_BACKUP"
+    fi
+    return 0
 }
 
 # --- B: pushed apps and their quick cards ----------------------------------
@@ -136,7 +153,7 @@ _mod_launcher_settings_restore() {
 # minus OYG_LAUNCHER_KEEP.
 _mod_launcher_targets() {
     stubs=$(oyg_luna "$LAUNCHER_SAM_URI/listApps" '{}' \
-        | oyg_json "[a['id'] for a in d.get('apps', []) if a.get('type') == 'stub']")
+        | oyg_jlist apps id type | awk '$2 == "stub" { print $1 }')
     for id in $LAUNCHER_HIDE_IDS $stubs; do
         case " ${OYG_LAUNCHER_KEEP:-} " in
             *" $id "*) continue ;;
@@ -147,8 +164,7 @@ _mod_launcher_targets() {
 
 # _mod_launcher_lp_ids <method> — "<appId> <launchPointId>" per line.
 _mod_launcher_lp_ids() {
-    oyg_luna "$LAUNCHER_HLP_URI/$1" '{}' \
-        | oyg_json "['%s %s' % (p.get('id'), p.get('launchPointId')) for p in d.get('launchPoints', [])]"
+    oyg_luna "$LAUNCHER_HLP_URI/$1" '{}' | oyg_jlist launchPoints id launchPointId
 }
 
 _mod_launcher_apps_harden() {
@@ -163,19 +179,20 @@ _mod_launcher_apps_harden() {
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: hideLaunchPoint %s\n' "$lp"
             elif oyg_luna "$LAUNCHER_HLP_URI/hideLaunchPoint" "{\"launchPointId\":\"$lp\"}" \
-                    | oyg_json "d.get('returnValue')" | grep -q True; then
+                    | oyg_jok; then
                 ok "launcher: hid $id from the app bar ($lp)"
                 case " $hidden " in *" $lp "*) ;; *) hidden="$hidden $lp" ;; esac
             else
                 warn "launcher: hideLaunchPoint $lp failed"
             fi
         fi
-        qc=$(printf '%s\n' "$cards" | awk -v i="$id" '$1 == i { print $2; exit }')
+        # <launchPointId>@<position>, so restore puts it back where it was.
+        qc=$(printf '%s\n' "$cards" | awk -v i="$id" '$1 == i { print $2 "@" (NR - 1); exit }')
         if [ -n "$qc" ]; then
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: removeQCard %s\n' "$qc"
-            elif oyg_luna "$LAUNCHER_HLP_URI/removeQCard" "{\"launchPointId\":\"$qc\"}" \
-                    | oyg_json "d.get('returnValue')" | grep -q True; then
+            elif oyg_luna "$LAUNCHER_HLP_URI/removeQCard" "{\"launchPointId\":\"${qc%@*}\"}" \
+                    | oyg_jok; then
                 ok "launcher: removed the quick card of $id ($qc)"
                 case " $qcards " in *" $qc "*) ;; *) qcards="$qcards $qc" ;; esac
             else
@@ -188,33 +205,94 @@ _mod_launcher_apps_harden() {
     state_put launcher.qcards "$(printf '%s' "$qcards" | sed 's/^ *//')"
 }
 
+# Entries that could not be put back stay in state for the next restore.
 _mod_launcher_apps_restore() {
+    left_lp=""; left_qc=""
     for lp in $(state_get launcher.hidden 2>/dev/null); do
         if [ "$OYG_DRY_RUN" = "1" ]; then
             printf 'DRY-RUN: unhideLaunchPoint %s\n' "$lp"
+        elif oyg_luna "$LAUNCHER_HLP_URI/unhideLaunchPoint" "{\"launchPointId\":\"$lp\"}" | oyg_jok; then
+            ok "launcher: unhid $lp"
         else
-            oyg_luna "$LAUNCHER_HLP_URI/unhideLaunchPoint" "{\"launchPointId\":\"$lp\"}" >/dev/null \
-                && ok "launcher: unhid $lp"
+            warn "launcher: unhideLaunchPoint $lp failed"
+            left_lp="$left_lp $lp"
         fi
     done
-    for qc in $(state_get launcher.qcards 2>/dev/null); do
+    # Lowest position first, so each card lands where it was. Entries from
+    # before 0.8.12 carry no position and go first.
+    for qc in $(state_get launcher.qcards 2>/dev/null | tr ' ' '\n' \
+                | awk -F@ 'NF { p = 0; if (NF > 1) p = $2; print p " " $0 }' | sort -n | awk '{ print $2 }'); do
+        lp=${qc%@*}; pos=0
+        case "$qc" in *@*) pos=${qc##*@} ;; esac
         if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: addQCard %s\n' "$qc"
+            printf 'DRY-RUN: addQCard %s at %s\n' "$lp" "$pos"
+        elif oyg_luna "$LAUNCHER_HLP_URI/addQCard" "{\"launchPointId\":\"$lp\",\"position\":$pos}" | oyg_jok; then
+            ok "launcher: quick card $lp added back at position $pos"
         else
-            oyg_luna "$LAUNCHER_HLP_URI/addQCard" "{\"launchPointId\":\"$qc\",\"position\":0}" >/dev/null \
-                && ok "launcher: quick card $qc added back"
+            warn "launcher: addQCard $lp failed"
+            left_qc="$left_qc $qc"
         fi
     done
     [ "$OYG_DRY_RUN" = "1" ] && return 0
+    if [ -n "$left_lp$left_qc" ]; then
+        state_put launcher.hidden "$(printf '%s' "$left_lp" | sed 's/^ *//')"
+        state_put launcher.qcards "$(printf '%s' "$left_qc" | sed 's/^ *//')"
+        return 1
+    fi
     state_drop launcher.hidden
     state_drop launcher.qcards
 }
 
 # --- C: the push list -------------------------------------------------------
 
+# _mod_launcher_prune <file> <out> <hidden IDs> — the push list with only
+# the installed IDs (stdin) that are not hidden; prints the dropped IDs.
+# Only rewrites the shape LG writes, {"<key>":["<id>",...],...}, and fails
+# on anything else so the file is left alone.
+_mod_launcher_prune() {
+    flat=$(oyg_jflat <"$1") || return 1
+    [ -n "$flat" ] || return 1
+    printf '%s\n' "$flat" | awk -F'\t' '
+        $1 ~ /^[^.[]+\[[0-9]+\]$/ && $2 !~ /["\\]/ { next }
+        $1 ~ /^[^.[]+$/ && $2 == "[]" { next }
+        { bad = 1 } END { exit bad }' || return 1
+    grep -q '[[,][[:space:]]*[^]"[:space:]]' "$1" && return 1    # a non-string element
+    keep=$(mktemp 2>/dev/null) || return 1
+    cat >"$keep"
+    printf '%s\n' $3 | awk -v k="$keep" '
+        BEGIN { while ((getline l < k) > 0) keep[l] = 1 }
+        { delete keep[$0] }
+        END { for (i in keep) print i }' >"$keep.2" && mv "$keep.2" "$keep"
+    printf '%s\n' "$flat" | awk -F'\t' -v k="$keep" -v out="$2" '
+        BEGIN { while ((getline l < k) > 0) keep[l] = 1 }
+        {
+            key = $1; sub(/\[.*/, "", key)
+            if (!(key in seen)) { seen[key] = 1; order[++m] = key; ids[key] = "" }
+            if ($2 == "[]" && $1 == key) next
+            if ($2 in keep) {
+                if (ids[key] != "") ids[key] = ids[key] ","
+                ids[key] = ids[key] "\"" $2 "\""
+            } else {
+                if (gone != "") gone = gone " "
+                gone = gone $2
+            }
+        }
+        END {
+            s = "{"
+            for (i = 1; i <= m; i++) {
+                if (i > 1) s = s ","
+                s = s "\"" order[i] "\":[" ids[order[i]] "]"
+            }
+            print s "}" > out
+            print gone
+        }'
+    rc=$?
+    rm -f "$keep"
+    return $rc
+}
+
 _mod_launcher_pushlist_harden() {
-    installed=$(oyg_luna "$LAUNCHER_SAM_URI/listApps" '{}' \
-        | oyg_json "[a['id'] for a in d.get('apps', [])]")
+    installed=$(oyg_luna "$LAUNCHER_SAM_URI/listApps" '{}' | oyg_jlist apps id)
     [ -n "$installed" ] || { warn "launcher: listApps returned nothing — push list left alone"; return 0; }
     targets=$(_mod_launcher_targets)
     for f in $LAUNCHER_PUSHLIST_GLOB; do
@@ -227,20 +305,10 @@ _mod_launcher_pushlist_harden() {
         fi
         [ -e "$bak" ] || cp -p "$f" "$bak" || { warn "launcher: cannot back up $f"; continue; }
         tmp="$f.oyg.$$"
-        removed=$(printf '%s\n' "$installed" | python3 -c '
-import json, sys
-keep = set(sys.stdin.read().split()) - set(sys.argv[3].split())
-d = json.load(open(sys.argv[1]))
-gone = []
-for k, v in d.items():
-    if isinstance(v, list) and all(isinstance(x, str) for x in v):
-        gone += [x for x in v if x not in keep]
-        d[k] = [x for x in v if x in keep]
-json.dump(d, open(sys.argv[2], "w"), separators=(",", ":"))
-print(" ".join(gone))
-' "$f" "$tmp" "$targets") && mv "$tmp" "$f" || {
+        removed=$(printf '%s\n' "$installed" | _mod_launcher_prune "$f" "$tmp" "$targets") \
+            && oyg_mode_like "$f" "$tmp" "$bak" && mv "$tmp" "$f" || {
             rm -f "$tmp"
-            warn "launcher: could not rewrite $f"
+            warn "launcher: $f left as it is (not the shape this module rewrites, or not writable)"
             continue
         }
         if [ -n "$removed" ]; then
@@ -252,16 +320,22 @@ print(" ".join(gone))
 }
 
 _mod_launcher_pushlist_restore() {
+    prc=0
     for bak in "$OYG_BACKUP"/launcher-applist.*.json.orig; do
         [ -f "$bak" ] || continue
         region=${bak##*/launcher-applist.}; region=${region%.json.orig}
         f=/var/palm/customization/launchpoints/$region/applist.json
         if [ "$OYG_DRY_RUN" = "1" ]; then
             printf 'DRY-RUN: cp %s %s\n' "$bak" "$f"
+        elif cp -p "$bak" "$f"; then
+            ok "launcher: push list $region restored"
+            oyg_retire_backup "$bak"
         else
-            cp -p "$bak" "$f" && ok "launcher: push list $region restored"
+            warn "launcher: could not restore $f (backup kept at $bak)"
+            prc=1
         fi
     done
+    return $prc
 }
 
 # --- D: layout ----------------------------------------------------------------
@@ -338,12 +412,11 @@ _mod_launcher_home_pid() {
 # preloadmanager does).
 _mod_launcher_restart_home() {
     p0=$(_mod_launcher_home_pid) || return 1
-    front=$(oyg_luna "$LAUNCHER_SAM_URI/getForegroundAppInfo" '{}' \
-        | oyg_json "d.get('appId')")
+    front=$(oyg_luna "$LAUNCHER_SAM_URI/getForegroundAppInfo" '{}' | oyg_jget appId)
     kill -TERM "$p0" 2>/dev/null || return 1
     n=0
     while [ -d "/proc/$p0" ] && [ "$n" -lt 50 ]; do
-        sleep 0.1; n=$((n + 1))
+        oyg_nap 0.1; n=$((n + 1))
     done
     if [ "$front" = "$LAUNCHER_HOME_APP" ]; then
         launch="{\"id\":\"$LAUNCHER_HOME_APP\"}"
@@ -357,6 +430,74 @@ _mod_launcher_restart_home() {
         sleep 1; n=$((n + 1))
     done
     return 1
+}
+
+# A new home takes the screen once it is up, even preloaded. So while
+# another app is on screen (the control app running Apply or Undo, or a
+# show), the restart waits until you are back on the home; until then the
+# home keeps its current layout.
+# The pending restart is a file, not state: the waiter runs beside the job
+# that started it, and state writes take no lock. "<token> <pid>"; the
+# waiter gives up as soon as the token is not its own.
+LAUNCHER_WAITER_PID="$OYG_ROOT/launcher-home.pid"
+
+_mod_launcher_front() {
+    oyg_luna "$LAUNCHER_SAM_URI/getForegroundAppInfo" '{}' | oyg_jget appId
+}
+
+_mod_launcher_cancel_deferred() {
+    wp=$(awk '{ print $2 }' "$LAUNCHER_WAITER_PID" 2>/dev/null)
+    rm -f "$LAUNCHER_WAITER_PID"
+    [ -n "$wp" ] && grep -q oyg "/proc/$wp/cmdline" 2>/dev/null && kill "$wp" 2>/dev/null
+    return 0
+}
+
+# _mod_launcher_restart_now <check> — restart the home; with <check>=1, make
+# sure it took the trimmed layout and undo the layout if not.
+_mod_launcher_restart_now() {
+    since=$(date '+%Y-%m-%dT%H:%M:%S')
+    if _mod_launcher_restart_home; then
+        [ "$1" = "1" ] || return 0
+        _mod_launcher_layout_ok "$since" && { ok "launcher: home restarted with $desc"; return 0; }
+    elif [ "$1" != "1" ]; then
+        warn "launcher: the home did not restart — press Home"
+        return 1
+    fi
+    warn "launcher: the home did not take the trimmed layout — undoing it"
+    _mod_launcher_layout_restore
+    return 1
+}
+
+# _mod_launcher_restart_or_defer <check> — now if the home or nothing is on
+# screen, else in the background once the home is (polled every 2 s, for up
+# to 30 min; after that the next boot shows the layout).
+_mod_launcher_restart_or_defer() {
+    _mod_launcher_cancel_deferred
+    front=$(_mod_launcher_front)
+    if [ -z "$front" ] || [ "$front" = "$LAUNCHER_HOME_APP" ]; then
+        _mod_launcher_restart_now "$1"
+        return
+    fi
+    ok "launcher: the home shows the new layout once you are back on it ($front is on screen)"
+    token="$(date +%s).$$"
+    printf '%s\n' "$token" >"$LAUNCHER_WAITER_PID"
+    ( trap '' HUP
+      mine() { [ "$(awk '{ print $1 }' "$LAUNCHER_WAITER_PID" 2>/dev/null)" = "$token" ]; }
+      n=0
+      while [ "$n" -lt 900 ]; do
+          sleep 2; n=$((n + 1))
+          mine || exit 0
+          f=$(_mod_launcher_front)
+          [ -z "$f" ] || [ "$f" = "$LAUNCHER_HOME_APP" ] || continue
+          rm -f "$LAUNCHER_WAITER_PID"
+          log "launcher: back on the home — restarting it for the new layout"
+          _mod_launcher_restart_now "$1"
+          exit 0
+      done
+      mine && rm -f "$LAUNCHER_WAITER_PID"
+      log "launcher: the home was not on screen for 30 min — the next boot shows the new layout" ) </dev/null >>"$OYG_LOG" 2>&1 &
+    printf '%s %s\n' "$token" "$!" >"$LAUNCHER_WAITER_PID"
+    return 0
 }
 
 # _mod_launcher_check_first_start — early in boot the home is not running
@@ -498,14 +639,7 @@ $zerosize
         ( trap '' HUP; _mod_launcher_check_first_start ) </dev/null >>"$OYG_LOG" 2>&1 &
         return 0
     fi
-    since=$(date '+%Y-%m-%dT%H:%M:%S')
-    if _mod_launcher_restart_home && _mod_launcher_layout_ok "$since"; then
-        ok "launcher: home restarted with $desc"
-    else
-        warn "launcher: the home did not take the trimmed layout — undoing it"
-        _mod_launcher_layout_restore
-        return 1
-    fi
+    _mod_launcher_restart_or_defer 1
 }
 
 _mod_launcher_layout_restore() {
@@ -519,10 +653,12 @@ _mod_launcher_layout_restore() {
     fi
     _mod_launcher_wallpaper_restore
     [ "$wchanged" = "1" ] && { ok "launcher: stock hero picture back"; back=1; }
-    if [ "$back" = "1" ] && _mod_launcher_home_pid >/dev/null; then
-        _mod_launcher_restart_home || warn "launcher: the home did not restart — press Home"
-    fi
     state_drop launcher.trim
+    if [ "$back" = "1" ] && _mod_launcher_home_pid >/dev/null; then
+        _mod_launcher_restart_or_defer 0
+    else
+        _mod_launcher_cancel_deferred
+    fi
 }
 
 # --- entry points ------------------------------------------------------------
@@ -534,7 +670,6 @@ mod_launcher_harden() {
     fi
     [ "$OYG_DRY_RUN" = "1" ] || require_root
     have luna-send || { warn "launcher: luna-send missing"; return 1; }
-    have python3 || { warn "launcher: python3 missing"; return 1; }
     _mod_launcher_settings_harden
     _mod_launcher_apps_harden
     _mod_launcher_pushlist_harden
@@ -544,11 +679,13 @@ mod_launcher_harden() {
 
 mod_launcher_restore() {
     [ "$OYG_DRY_RUN" = "1" ] || require_root
-    _mod_launcher_layout_restore
-    _mod_launcher_pushlist_restore
-    _mod_launcher_apps_restore
-    _mod_launcher_settings_restore
+    lrc=0
+    _mod_launcher_layout_restore || lrc=1
+    _mod_launcher_pushlist_restore || lrc=1
+    _mod_launcher_apps_restore || lrc=1
+    _mod_launcher_settings_restore || lrc=1
     [ "$OYG_DRY_RUN" = "1" ] || { state_drop launcher.applied; state_drop launcher.wallpaper; }
+    return $lrc
 }
 
 mod_launcher_status() {

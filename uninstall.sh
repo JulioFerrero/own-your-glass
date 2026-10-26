@@ -18,33 +18,40 @@ require_root() {
     fi
 }
 
-stop_watchers() {
-    log "asking any running watchers to exit"
-    pkill -f "$OYG_DST/watch-capture.sh" 2>/dev/null || true
-    pkill -f "$OYG_DST/watch-logs.sh"   2>/dev/null || true
-    pkill -f "$OYG_DST/scripts/watch-wake.sh" 2>/dev/null || true
-    pkill -f "$OYG_DST/watchers"        2>/dev/null || true
+# kill_matching <text> — pkill -f, or a /proc scan where BusyBox was built
+# without pkill (OpenEmbedded's 1.24.1 config, the webOS 4 era).
+kill_matching() {
+    if type pkill >/dev/null 2>&1; then
+        pkill -f "$1" 2>/dev/null
+        return 0
+    fi
+    for d in /proc/[0-9]*; do
+        [ "${d#/proc/}" = "$$" ] && continue
+        tr '\0' ' ' <"$d/cmdline" 2>/dev/null | grep -qF -- "$1" && kill -TERM "${d#/proc/}" 2>/dev/null
+    done
+    return 0
 }
 
+stop_watchers() {
+    log "asking any running watchers to exit"
+    kill_matching "$OYG_DST/watch-capture.sh"
+    kill_matching "$OYG_DST/watch-logs.sh"
+    kill_matching "$OYG_DST/scripts/watch-wake.sh"
+    kill_matching "$OYG_DST/watchers"
+}
+
+# Every module, launcher, perms and remoteone included: restore only puts
+# back what harden recorded, so it needs no opt-in flags. Returns 1 if any
+# module could not be restored.
 restore_hardening() {
     if [ ! -x "$OYG_DST/oyg" ]; then
         warn "oyg binary missing at $OYG_DST/oyg — skipping restore"
         return 0
     fi
     log "restoring prior state"
-    "$OYG_DST/oyg" restore --only services || warn "services restore failed"
-    "$OYG_DST/oyg" restore --only capture  || warn "capture restore failed"
-    "$OYG_DST/oyg" restore --only debloat  || warn "debloat restore failed"
-    "$OYG_DST/oyg" restore --only mic      || warn "mic restore failed"
-    "$OYG_DST/oyg" restore --only voice    || warn "voice restore failed"
-    "$OYG_DST/oyg" restore --only logs     || warn "logs restore failed"
-    "$OYG_DST/oyg" restore --only apps     || warn "apps restore failed"
-    "$OYG_DST/oyg" restore --only policy   || warn "policy restore failed"
-    "$OYG_DST/oyg" restore --only network  || warn "network restore failed"
-    if [ "${OYG_AGGRESSIVE:-0}" = "1" ]; then
-        "$OYG_DST/oyg" restore --only perms     || warn "perms restore failed"
-        "$OYG_DST/oyg" restore --only remoteone || warn "remoteone restore failed"
-    fi
+    "$OYG_DST/oyg" restore && return 0
+    warn "one or more modules could not be restored (see above)"
+    return 1
 }
 
 remove_init_hook() {
@@ -78,10 +85,18 @@ remove_tool_tree() {
 main() {
     require_root
     stop_watchers
-    restore_hardening
+    if restore_hardening; then
+        remove_init_hook
+        remove_tool_tree
+        log "uninstall complete"
+        return 0
+    fi
+    # The backups are the only way back to what the TV had: keep them, and
+    # the boot hook goes so nothing is re-applied.
     remove_init_hook
-    remove_tool_tree
-    log "uninstall complete"
+    err "uninstall stopped: $OYG_DST is kept, with the backups and state the failed restores need"
+    err "fix what the warnings name, or reboot, then run 'sh $OYG_DST/uninstall.sh' again"
+    exit 1
 }
 
 main "$@"

@@ -6,7 +6,7 @@ OYG_MOD_POLICY=1
 # block_updates + telnet_disabled (absent flag ⇒ no unauth root-shell
 # telnetd; sshd flag never touched). Job B rewrites accepted:true→false
 # in /var/luna/preferences/eula via sed; backups ONCE, never overwritten.
-# Job C declines the SDX stores A→D (python3; "D" UNVERIFIED; resetEula
+# Job C declines the SDX stores A→D ("D" UNVERIFIED; resetEula
 # NOT called); Job D moves the nag aside. Job E switches HbbTV and the SSAP
 # phone-remote API off through settingsservice; Job F empties the LG ad
 # cookie. Details: docs/FINDINGS.md (F38, F38a, F38b, F43, F43a, F49)
@@ -71,7 +71,10 @@ _policy_settings_harden() {
         cur=$(oyg_setting_get "$cat" "$key")
         [ -n "$cur" ] || { ok "policy: setting $cat.$key not on this firmware — skipped"; continue; }
         if [ "$OYG_DRY_RUN" != "1" ] && ! grep -q "^$cat:$key=" "$POLICY_SETTINGS_BACKUP" 2>/dev/null; then
-            printf '%s:%s=%s\n' "$cat" "$key" "$cur" >>"$POLICY_SETTINGS_BACKUP"
+            printf '%s:%s=%s\n' "$cat" "$key" "$cur" >>"$POLICY_SETTINGS_BACKUP" 2>/dev/null || {
+                warn "policy: cannot record $cat.$key in $POLICY_SETTINGS_BACKUP — left as $cur"
+                continue
+            }
         fi
         if [ "$cur" = "$want" ]; then
             ok "policy: $cat.$key already $want"
@@ -85,8 +88,12 @@ _policy_settings_harden() {
     done
 }
 
+# Lines that could not be set back stay in the backup for the next restore;
+# deleting them would make the next harden record the hardened value as the
+# original.
 _policy_settings_restore() {
     [ -r "$POLICY_SETTINGS_BACKUP" ] || return 0
+    left=$(mktemp 2>/dev/null) || { warn "policy: no temp file — privacy settings not restored"; return 1; }
     while IFS= read -r spec; do
         [ -n "$spec" ] || continue
         cat=${spec%%:*}; rest=${spec#*:}; key=${rest%%=*}; val=${rest#*=}
@@ -95,10 +102,59 @@ _policy_settings_restore() {
         elif oyg_setting_set "$cat" "$key" "$val"; then
             ok "policy: $cat.$key restored to $val"
         else
-            warn "policy: could not restore $cat.$key"
+            warn "policy: could not restore $cat.$key (kept in $POLICY_SETTINGS_BACKUP)"
+            printf '%s\n' "$spec" >>"$left"
         fi
     done <"$POLICY_SETTINGS_BACKUP"
-    [ "$OYG_DRY_RUN" = "1" ] || rm -f "$POLICY_SETTINGS_BACKUP"
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        rm -f "$left"
+    elif [ -s "$left" ]; then
+        mv -f "$left" "$POLICY_SETTINGS_BACKUP"
+        return 1
+    else
+        rm -f "$left" "$POLICY_SETTINGS_BACKUP"
+    fi
+    return 0
+}
+
+# _policy_flag_set <file> <key> — touch a webOSbrew flag, recording first
+# whether it was there before own-your-glass (policy.<key>.prev). Before
+# 0.8.12 nothing was recorded; a flag found on such a TV is "unknown".
+_policy_flag_set() {
+    if [ -z "$(state_get "policy.$2.prev")" ] && [ "$OYG_DRY_RUN" != "1" ]; then
+        if [ ! -e "$1" ]; then
+            state_put "policy.$2.prev" absent
+        elif [ -n "$(state_get "policy.$2")" ]; then
+            state_put "policy.$2.prev" unknown
+        else
+            state_put "policy.$2.prev" present
+        fi
+    fi
+    [ -e "$1" ] && { run touch "$1" 2>/dev/null; return; }
+    # 0644, like the flags Homebrew Channel itself writes.
+    run touch "$1" 2>/dev/null && chmod 0644 "$1" 2>/dev/null
+}
+
+# _policy_flag_restore <file> <key> <what> — remove the flag only if it was
+# absent before own-your-glass. Returns 1 if that removal failed.
+_policy_flag_restore() {
+    prev=$(state_get "policy.$2.prev")
+    if [ ! -e "$1" ]; then
+        ok "policy: $3 flag already absent"
+    elif [ "$prev" = "absent" ]; then
+        if run rm -f "$1" 2>/dev/null; then
+            ok "policy: removed $3 flag at $1 (it was not there before own-your-glass)"
+        else
+            warn "policy: could not remove $1 — manual cleanup required"
+            return 1
+        fi
+    elif [ "$prev" = "present" ]; then
+        ok "policy: kept $3 flag at $1 — it was there before own-your-glass"
+    elif [ -n "$prev$(state_get "policy.$2")" ]; then
+        warn "policy: kept $3 flag at $1 — set by a version that did not record whether you had it before; Homebrew Channel's settings turn it off"
+    fi
+    [ "$OYG_DRY_RUN" = "1" ] || state_drop "policy.$2.prev"
+    return 0
 }
 
 _policy_mounted() {
@@ -132,7 +188,9 @@ _policy_ssap_harden() {
 
 _policy_ssap_restore() {
     _policy_mounted "$POLICY_SSAP_XINETD" || return 0
-    run umount "$POLICY_SSAP_XINETD" && _policy_xinetd_reload && ok "policy: SSAP port 3001 open to the LAN again"
+    run umount "$POLICY_SSAP_XINETD" || { warn "policy: could not umount $POLICY_SSAP_XINETD"; return 1; }
+    _policy_xinetd_reload
+    ok "policy: SSAP port 3001 open to the LAN again"
 }
 
 _policy_cookie_mounted() {
@@ -149,7 +207,8 @@ _policy_cookie_harden() {
 
 _policy_cookie_restore() {
     _policy_cookie_mounted || return 0
-    run umount "$POLICY_AD_COOKIE" && ok "policy: LG ad cookie back"
+    run umount "$POLICY_AD_COOKIE" || { warn "policy: could not umount $POLICY_AD_COOKIE"; return 1; }
+    ok "policy: LG ad cookie back"
 }
 
 # _policy_eula_count_accepted <file>
@@ -214,109 +273,51 @@ _policy_eula_collect_ids() {
 }
 
 # _policy_sdx_status_dump <file>
-#   Echo every statusList entry as `<code> <status>` on its own line
-#   (one entry per line). Used by status output to show what is
-#   currently on disk. Empty if the file is missing or unparseable.
-#   We use python3 (guarded): it gives us a correct JSON parse, which
-#   awk/sed cannot promise for this file's shape.
+#   Echo every statusList entry as `<code> <status>` on its own line.
+#   Empty if the file is missing or not JSON (oyg_jflat, BusyBox awk).
 _policy_sdx_status_dump() {
-    f=$1
-    [ -r "$f" ] || return 0
-    if ! have python3; then
-        return 0
-    fi
-    python3 -c '
-import json, sys
-try:
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        d = json.load(f)
-    for e in d.get("statusList", []) or []:
-        c = e.get("managementTypeCode", "?")
-        s = e.get("status", "?")
-        print("%s %s" % (c, s))
-except Exception:
-    pass
-' "$f" 2>/dev/null
+    [ -r "$1" ] || return 0
+    oyg_jlist statusList managementTypeCode status <"$1"
 }
 
 # _policy_sdx_count_a <file>
-#   Print the number of "A" (Accepted) status entries in <file>'s
-#   statusList. Used for the before/after counter. Same python3 guard.
+#   Print the number of "A" (Accepted) entries in <file>'s statusList.
 _policy_sdx_count_a() {
-    f=$1
-    [ -r "$f" ] || { printf '0\n'; return 0; }
-    if ! have python3; then
-        printf '0\n'
-        return 0
-    fi
-    python3 -c '
-import json, sys
-try:
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        d = json.load(f)
-    n = 0
-    for e in d.get("statusList", []) or []:
-        if e.get("status") == "A":
-            n += 1
-    print(n)
-except Exception:
-    print(0)
-' "$f" 2>/dev/null
+    [ -r "$1" ] || { printf '0\n'; return 0; }
+    oyg_jflat <"$1" | awk -F'\t' '$1 ~ /^statusList\[[0-9]+\]\.status$/ && $2 == "A" { n++ } END { print n + 0 }'
 }
 
 # _policy_sdx_count_entries <file>
 #   Print the number of statusList entries in <file> (0 if it does not
 #   parse). The harden sanity check compares the live store with its backup.
 _policy_sdx_count_entries() {
-    python3 -c '
-import json, sys
-try:
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        d = json.load(f)
-    print(len(d.get("statusList", []) or []))
-except Exception:
-    print(0)
-' "$1" 2>/dev/null || echo 0
+    oyg_jflat <"$1" 2>/dev/null | awk -F'\t' '
+        match($1, /^statusList\[[0-9]+\]/) { s[substr($1, 1, RLENGTH)] = 1 }
+        END { n = 0; for (k in s) n++; print n }'
 }
 
 # _policy_sdx_decline_all <file>
-#   Rewrite every statusList[].status "A"→"D" preserving the other fields
-#   (temp file + mv, atomic). python3 REQUIRED — warn + skip, never
-#   corrupt. json.dump round-trip preserves layout to canonical separators.
+#   Rewrite every statusList[].status "A" to "D" and change nothing else:
+#   LG uses the "status" key only inside statusList, and a file where it
+#   appears anywhere else is refused. Temp file + mv, the original mode kept.
 _policy_sdx_decline_all() {
     f=$1
     [ -r "$f" ] || return 1
-    if ! have python3; then
-        warn "policy: python3 not available — refusing to rewrite $f (skipping)"
+    orig=${2:-}
+    oyg_jflat <"$f" | awk -F'\t' '
+        ($1 == "status" || $1 ~ /\.status$/) && $1 !~ /^statusList\[[0-9]+\]\.status$/ { bad = 1 }
+        END { exit bad }' || {
+        warn "policy: $f has a \"status\" key outside statusList — not rewritten"
         return 1
-    fi
+    }
     tmp=$(mktemp 2>/dev/null) || return 1
-    # Not a here-doc: the webOS 4 shell failed to parse one inside this `if`
-    # ("line 279: syntax error: unexpected "then"").
-    if python3 -c '
-import json, sys, os
-src, dst = sys.argv[1], sys.argv[2]
-with open(src, "r", encoding="utf-8") as fh:
-    d = json.load(fh)
-changed = 0
-for e in d.get("statusList", []) or []:
-    if e.get("status") == "A":
-        e["status"] = "D"
-        changed += 1
-with open(dst, "w", encoding="utf-8") as fh:
-    json.dump(d, fh, separators=(", ", ": "))
-    fh.write("\n")
-sys.exit(0)
-' "$f" "$tmp" 2>/dev/null; then
-        if mv "$tmp" "$f" 2>/dev/null; then
-            return 0
-        fi
-        rm -f "$tmp" 2>/dev/null
-        return 1
-    else
-        rm -f "$tmp" 2>/dev/null
-        return 1
+    if sed 's/"status"[[:space:]]*:[[:space:]]*"A"/"status": "D"/g' "$f" >"$tmp" 2>/dev/null \
+        && oyg_mode_like "$f" "$tmp" "$orig" \
+        && mv "$tmp" "$f" 2>/dev/null; then
+        return 0
     fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
 }
 
 # _policy_sdx_store_basename <path>
@@ -360,7 +361,7 @@ mod_policy_harden() {
         printf 'DRY-RUN: touch %s\n' "$POLICY_FLAG"
         ok "policy: webOSbrew update-blocker flag would be present at $POLICY_FLAG"
     else
-        if run touch "$POLICY_FLAG" 2>/dev/null; then
+        if _policy_flag_set "$POLICY_FLAG" flagfile; then
             ok "policy: webOSbrew update-blocker flag present at $POLICY_FLAG"
         else
             warn "policy: touch $POLICY_FLAG failed (Job A2 + Job B still run)"
@@ -389,7 +390,7 @@ mod_policy_harden() {
         printf 'DRY-RUN: touch %s\n' "$POLICY_TELNET_FLAG"
         ok "policy: webOSbrew telnet-disable flag would be present at $POLICY_TELNET_FLAG"
     else
-        if run touch "$POLICY_TELNET_FLAG" 2>/dev/null; then
+        if _policy_flag_set "$POLICY_TELNET_FLAG" telnetflag; then
             ok "policy: webOSbrew telnet-disable flag present at $POLICY_TELNET_FLAG"
         else
             warn "policy: touch $POLICY_TELNET_FLAG failed (Job B still runs)"
@@ -459,6 +460,7 @@ mod_policy_harden() {
         else
             # shellcheck disable=SC2086
             if sed $sed_cmd "$POLICY_EULA" >"$tmp" 2>/dev/null \
+                && oyg_mode_like "$POLICY_EULA" "$tmp" "$POLICY_EULA_BACKUP" \
                 && mv "$tmp" "$POLICY_EULA" 2>/dev/null; then
                 : # ok handled below
             else
@@ -475,6 +477,7 @@ mod_policy_harden() {
                 "$POLICY_EULA" "$tmp" "$tmp" "$POLICY_EULA"
         else
             if sed -e 's/"accepted":true/"accepted":false/g' "$POLICY_EULA" >"$tmp" 2>/dev/null \
+                && oyg_mode_like "$POLICY_EULA" "$tmp" "$POLICY_EULA_BACKUP" \
                 && mv "$tmp" "$POLICY_EULA" 2>/dev/null; then
                 : # ok handled below
             else
@@ -538,11 +541,6 @@ mod_policy_harden() {
     # Idempotency contract: backups written ONCE and preserved; all-D
     # files are left untouched (reported OK); missing store is N/A, does
     # not fail the module.
-    if ! have python3; then
-        warn "policy: python3 is not available — Job C (SDX stores) skipped on every store"
-        warn "policy: install python3 on the device, or accept that the SDX/ACR path keeps reading Accepted"
-    fi
-
     sdx_store_fail=0
     sdx_store_list=""
     for sdx_store_path in \
@@ -594,7 +592,7 @@ mod_policy_harden() {
         fi
 
         if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: python3 rewrite %s (A→D for %s entries)\n' \
+            printf 'DRY-RUN: rewrite %s (A→D for %s entries)\n' \
                 "$sdx_store_path" "$sdx_before"
             ok "policy: sdx store $sdx_bn — would flip $sdx_before entr(y/ies) (A→D)"
             state_put "$sdx_key_prefix.last.after" "0"
@@ -602,8 +600,8 @@ mod_policy_harden() {
             continue
         fi
 
-        if ! _policy_sdx_decline_all "$sdx_store_path"; then
-            warn "policy: sdx store $sdx_bn — rewrite failed (python3 missing or file not writable?)"
+        if ! _policy_sdx_decline_all "$sdx_store_path" "$sdx_bak"; then
+            warn "policy: sdx store $sdx_bn — rewrite failed (unexpected shape, or not writable)"
             sdx_store_fail=$((sdx_store_fail + 1))
             state_put "$sdx_key_prefix.last.after" "$sdx_before"
             continue
@@ -614,17 +612,11 @@ mod_policy_harden() {
         state_put "$sdx_key_prefix.last.after" "$sdx_after"
 
         # JSON sanity: the file must still parse and contain the same
-        # number of statusList entries we started with. We dump the
-        # live file through python3 and count the entries; we hit the
-        # backup the same way to know how many entries the store
-        # originally had (the backup is all-A so _policy_sdx_count_a
-        # is the wrong counter — use len() instead).
-        sdx_sanity_entries=0
-        sdx_orig_entries=0
-        if have python3; then
-            sdx_sanity_entries=$(_policy_sdx_count_entries "$sdx_store_path")
-            sdx_orig_entries=$(_policy_sdx_count_entries "$sdx_bak")
-        fi
+        # number of statusList entries we started with, counted in the
+        # live file and in the backup (the backup is all-A, so
+        # _policy_sdx_count_a is the wrong counter).
+        sdx_sanity_entries=$(_policy_sdx_count_entries "$sdx_store_path")
+        sdx_orig_entries=$(_policy_sdx_count_entries "$sdx_bak")
         if [ "$sdx_sanity_entries" != "$sdx_orig_entries" ] || [ "$sdx_sanity_entries" = "0" ]; then
             warn "policy: sdx store $sdx_bn — entry-count sanity failed ($sdx_sanity_entries vs backup $sdx_orig_entries) — restoring from backup"
             if cp -p "$sdx_bak" "$sdx_store_path" 2>/dev/null; then
@@ -698,6 +690,8 @@ mod_policy_harden() {
             printf 'DRY-RUN: mv %s %s\n' "$POLICY_NAG_PATH" "$nag_neutral_path"
             ok "policy: nag schedule — would move $POLICY_NAG_PATH → $nag_neutral_path"
             state_put "policy.nag.neutralised" "1"
+        elif [ ! -e "$POLICY_NAG_BACKUP" ]; then
+            warn "policy: nag schedule — no backup, so $POLICY_NAG_PATH is not moved"
         else
             if run mv "$POLICY_NAG_PATH" "$nag_neutral_path" 2>/dev/null; then
                 ok "policy: nag schedule — neutralised (moved aside to $nag_neutral_path)"
@@ -732,43 +726,17 @@ mod_policy_restore() {
     rc=0
 
     # Job E + F — privacy switches and the ad cookie.
-    _policy_settings_restore
-    _policy_ssap_restore
-    _policy_cookie_restore
+    _policy_settings_restore || rc=1
+    _policy_ssap_restore || rc=1
+    _policy_cookie_restore || rc=1
 
-    # Job A — remove the webOSbrew update-blocker flag.
-    if [ -e "$POLICY_FLAG" ]; then
-        if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: rm -f %s\n' "$POLICY_FLAG"
-        elif run rm -f "$POLICY_FLAG" 2>/dev/null; then
-            ok "policy: removed webOSbrew update-blocker flag at $POLICY_FLAG"
-        else
-            warn "policy: could not remove $POLICY_FLAG — manual cleanup required"
-            rc=1
-        fi
-    else
-        ok "policy: webOSbrew update-blocker flag already absent"
-    fi
-
-    # Job A2 — remove the webOSbrew telnet-disable flag. WARNING:
-    # removing this flag re-enables `telnetd -l /bin/sh` on the next
-    # boot — an unauthenticated root shell on the LAN. We do not
-    # silently drop it on `restore`; the operator must opt in by
-    # running `oyg restore --only policy` and confirming. The
-    # module still removes it when asked (restore is an explicit
-    # undo of harden), and the WARN line above is the audit trail.
-    if [ -e "$POLICY_TELNET_FLAG" ]; then
-        if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: rm -f %s\n' "$POLICY_TELNET_FLAG"
-        elif run rm -f "$POLICY_TELNET_FLAG" 2>/dev/null; then
-            warn "policy: removed webOSbrew telnet-disable flag at $POLICY_TELNET_FLAG — telnetd may launch on next boot"
-        else
-            warn "policy: could not remove $POLICY_TELNET_FLAG — manual cleanup required"
-            rc=1
-        fi
-    else
-        ok "policy: webOSbrew telnet-disable flag already absent"
-    fi
+    # Job A / A2 — the webOSbrew flags go only if they were not there
+    # before. Removing the telnet one brings back webOSbrew's default:
+    # `telnetd -l /bin/sh` (a root shell on the LAN) from the next boot.
+    _policy_flag_restore "$POLICY_FLAG" flagfile "webOSbrew update-blocker" || rc=1
+    _policy_flag_restore "$POLICY_TELNET_FLAG" telnetflag "webOSbrew telnet-disable" || rc=1
+    [ -e "$POLICY_TELNET_FLAG" ] \
+        || warn "policy: no webOSbrew telnet-disable flag — telnetd (root shell, no password) may listen on the LAN from the next boot"
 
     # Job B — restore the EULA file from backup.
     if [ ! -e "$POLICY_EULA_BACKUP" ]; then
@@ -781,6 +749,7 @@ mod_policy_restore() {
             printf 'DRY-RUN: cp -p %s %s\n' "$POLICY_EULA_BACKUP" "$POLICY_EULA"
         elif run cp -p "$POLICY_EULA_BACKUP" "$POLICY_EULA" 2>/dev/null; then
             ok "policy: restored $POLICY_EULA from $POLICY_EULA_BACKUP"
+            oyg_retire_backup "$POLICY_EULA_BACKUP"
         else
             warn "policy: cp $POLICY_EULA_BACKUP $POLICY_EULA failed"
             rc=1
@@ -808,6 +777,7 @@ mod_policy_restore() {
             printf 'DRY-RUN: cp -p %s %s\n' "$sdx_bak" "$sdx_store_path"
         elif run cp -p "$sdx_bak" "$sdx_store_path" 2>/dev/null; then
             ok "policy: sdx store $sdx_bn — restored $sdx_store_path from $sdx_bak"
+            oyg_retire_backup "$sdx_bak"
         else
             warn "policy: sdx store $sdx_bn — cp $sdx_bak $sdx_store_path failed"
             rc=1
@@ -821,11 +791,14 @@ mod_policy_restore() {
             printf 'DRY-RUN: mv %s %s\n' "$nag_neutral_path" "$POLICY_NAG_PATH"
         elif run mv "$nag_neutral_path" "$POLICY_NAG_PATH" 2>/dev/null; then
             ok "policy: nag schedule — restored $POLICY_NAG_PATH from $nag_neutral_path"
+            oyg_retire_backup "$POLICY_NAG_BACKUP"
         else
             warn "policy: nag schedule — mv $nag_neutral_path $POLICY_NAG_PATH failed"
             rc=1
         fi
     elif [ -e "$POLICY_NAG_PATH" ]; then
+        # LG wrote a new schedule since; the one we moved aside is stale.
+        [ -e "$nag_neutral_path" ] && run rm -f "$nag_neutral_path" 2>/dev/null
         ok "policy: nag schedule — already present at $POLICY_NAG_PATH"
     else
         # Neither file exists. Nothing to restore.
@@ -941,15 +914,9 @@ mod_policy_status() {
             print_status N/A "policy/sdx.$sdx_bn: $sdx_store_path does not exist on this device"
             continue
         fi
-        # Parse the on-disk statusList. python3 gives a stable dump.
         dump=$(_policy_sdx_status_dump "$sdx_store_path" 2>/dev/null)
         if [ -z "$dump" ]; then
-            # python3 missing OR file unparseable — fall back to grep.
-            if ! have python3; then
-                print_status FAIL "policy/sdx.$sdx_bn: python3 missing — cannot verify $sdx_store_path"
-            else
-                print_status FAIL "policy/sdx.$sdx_bn: $sdx_store_path exists but is not parseable as JSON"
-            fi
+            print_status FAIL "policy/sdx.$sdx_bn: $sdx_store_path exists but is not parseable as JSON"
             continue
         fi
         # Build a compact "<code>=<status> ..." summary and flag any A.

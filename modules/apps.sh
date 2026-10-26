@@ -209,6 +209,7 @@ _mod_apps_id_exists_on_device() {
 _mod_apps_write_json() {
     out=$1
     list=$2
+    orig=${3:-}
     tmp=$(mktemp 2>/dev/null) || return 1
     {
         printf '{'
@@ -226,6 +227,7 @@ _mod_apps_write_json() {
         printf ']}'
         printf '\n'
     } >"$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+    oyg_mode_like "$out" "$tmp" "$orig"
     mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
     return 0
 }
@@ -373,11 +375,11 @@ EOF
         [ -n "$unblocked" ] && ok "apps: would unblock$unblocked (blocked by an earlier version)"
         rm -f "$merged" 2>/dev/null
     else
-        if _mod_apps_write_json "$target" "$merged"; then
+        if _mod_apps_write_json "$target" "$merged" "$backup"; then
             ok "apps: wrote $target — $added_count curated added ($skipped_count skipped), $existing_kept pre-existing preserved"
             [ -n "$unblocked" ] && ok "apps: unblocked$unblocked (blocked by an earlier version)"
             if [ "$skipped_count" -gt 0 ]; then
-                warn "apps: $skipped_count curated ID(s) absent on this device (skipped): $skipped_list"
+                ok "apps: $skipped_count curated ID(s) not on this TV (nothing to hide): $skipped_list"
             fi
             rm -f "$merged" 2>/dev/null
         else
@@ -425,6 +427,7 @@ mod_apps_restore() {
                 printf 'DRY-RUN: rm -f %s\n' "$target" >&2
             elif run rm -f "$target" 2>/dev/null; then
                 ok "apps: removed $target (no original existed; sentinel backup)"
+                oyg_retire_backup "$backup"
             else
                 warn "apps: could not remove $target — manual cleanup required"
                 rc=1
@@ -434,6 +437,7 @@ mod_apps_restore() {
                 printf 'DRY-RUN: cp -p %s %s\n' "$backup" "$target" >&2
             elif run cp -p "$backup" "$target" 2>/dev/null; then
                 ok "apps: restored $target from $backup"
+                oyg_retire_backup "$backup"
             else
                 warn "apps: cp $backup $target failed"
                 rc=1

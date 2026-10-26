@@ -117,16 +117,20 @@ real TV.
   individual checks show underneath.
 - **Apply hardening** installs the bundled toolkit to `/var/lib/own-your-glass` and runs
   `oyg harden` with the network flags on (`OYG_NETWORK_BLOCK`, `OYG_NETWORK_STRICT`,
-  `OYG_NETWORK_IPBLOCK`, `OYG_DNS_OVERRIDE`, `OYG_DNS_RESOLVER`) and `OYG_LAUNCHER=1` (LG's ad
-  and promo settings off, pushed apps hidden; the home layout is left as it is). It also turns HbbTV
+  `OYG_NETWORK_IPBLOCK`, `OYG_DNS_OVERRIDE`, `OYG_DNS_RESOLVER`, `OYG_DNS_VARIANT_C`),
+  `OYG_LAUNCHER=1` (LG's ad and promo settings off, pushed apps hidden) and
+  `OYG_LAUNCHER_TRIM=1` (the Clean home layout). Variant C restarts ConnMan once, so Wi-Fi
+  drops for 7–30 s; the console says when the internet is back. It also turns HbbTV
   and the SSAP phone remote off and stops the telemetry daemons listed above. That is
   stricter than a plain `oyg harden`; see [the opt-in flags](#warn-on-risk--opt-in-flags) for
   what each one can break.
-- **Check again** re-reads the status. **Undo hardening** runs `oyg restore`.
-- **DNS blocking — Turn on / Turn off** starts or stops the on-device sinkhole (`scripts/dns.sh`).
+- **Check again** re-reads the status. **Undo hardening** runs `oyg restore`; what it undoes
+  stays undone after a reboot.
+- **DNS blocking — Turn on / Turn off** starts or stops the on-device sinkhole (`scripts/dns.sh`),
+  and the choice holds across reboots. Turn on also brings Variant C back when Apply put it on.
 - **Home screen — Clean / Stock** switches the home to the wallpaper layout shown at the top
   (`OYG_LAUNCHER_TRIM=1`) or puts LG's layout back (`OYG_LAUNCHER_TRIM=0`). Clean is kept at
-  every boot, and Apply hardening leaves whichever you picked alone.
+  every boot. Apply hardening sets Clean, so Stock lasts until the next Apply.
 - **Restore network** runs `scripts/recover-network.sh`, which puts networking back to stock
   and works with no connection.
 - Leaving the app closes it, so it does not sit in memory behind other apps. A job that is
@@ -215,7 +219,7 @@ Everything in this toolkit is built from the same four low-level moves, because 
 
 ## Install (on the TV)
 
-**Supported firmware: webOS 10 (webOS 25), with `python3`.** That is the only firmware this toolkit has been run on. `install.sh` and `oyg harden` refuse anything older and any TV without `python3`. On webOS 4 the modules half-ran: old BusyBox, no Python, and the TV was left in a state that neither `oyg restore` nor a factory reset could undo. `OYG_FORCE_UNSUPPORTED=1` lets an older webOS through, untested; `python3` is still required. `oyg restore` works on any firmware.
+**Supported firmware: webOS 10 (webOS 25).** That is the only firmware this toolkit has been run on, and `install.sh` and `oyg harden` refuse anything older. On webOS 4 an earlier version half-ran and left a TV that neither `oyg restore` nor a factory reset could undo (F52, F54). Python is no longer needed: the DNS sinkhole runs on the Node.js every webOS TV ships, JSON is read with BusyBox `awk`, and the scripts parse and run under the BusyBox 1.24 that webOS 4 is built with. `OYG_FORCE_UNSUPPORTED=1` lets an older webOS through, untested. `oyg restore` works on any firmware.
 
 Pick whichever path is easier. **(A)** runs entirely on the TV; **(B)** lets you review the repo on your computer first.
 
@@ -288,11 +292,37 @@ OYG_NETWORK_BLOCK=1 /var/lib/own-your-glass/oyg harden --only network
 Restore everything to the original state:
 
 ```sh
-sh uninstall.sh
+sh /var/lib/own-your-glass/uninstall.sh
 ```
 
 (or `/var/lib/own-your-glass/oyg restore` if you want to keep the
 tool installed but undo the hardening.)
+
+What restore puts back:
+
+- **Files** (the app block list, the consent stores, the push list, the
+  marketing schedule) from the copy taken before the first change, with
+  their original mode. The copy is then kept as `<name>.restored`, so a
+  later harden takes a fresh one.
+- **Settings** to the values they had, read back from the backup. One
+  that cannot be set back stays in the backup for the next restore.
+- **Bind mounts and blackhole routes** that the toolkit added. Ones that
+  were there before (webOSbrew's own `/etc/hosts` bind, for example) are
+  left alone.
+- **Services** it stopped, if they were running before.
+- **webOSbrew's flags** (`webosbrew_block_updates`,
+  `webosbrew_telnet_disabled`) only if they were not there before. A TV
+  hardened by a version before 0.8.12 has no record of that, so restore
+  keeps them and says so; Homebrew Channel's settings turn them off.
+- **DNS**: the sink stops, ConnMan gets its stock launcher back if
+  Variant C was on (Wi-Fi drops for 7–27 s while it restarts), and
+  `/etc/resolv.conf` is ConnMan's own again.
+
+Not put back: background processes the toolkit killed come back when
+the TV next asks for them or at the next boot, and log lines it cleared
+stay cleared. `oyg restore` exits 1 if any module could not be
+restored, and `uninstall.sh` then keeps `/var/lib/own-your-glass`, with
+its backups, instead of deleting it.
 
 ---
 
@@ -303,7 +333,7 @@ risky behaviour. **Read the linked findings in `docs/FINDINGS.md` first.**
 
 | Flag | Effect | What can break |
 |------|--------|----------------|
-| `OYG_FORCE_UNSUPPORTED=1` | lets `install.sh` and `oyg harden` run on a webOS older than 10, which this toolkit has never been run on (`python3` is still required) | anything: module paths, app IDs and BusyBox behaviour differ on older firmware |
+| `OYG_FORCE_UNSUPPORTED=1` | lets `install.sh` and `oyg harden` run on a webOS older than 10, which this toolkit has never been run on | anything: module paths, app IDs and BusyBox behaviour differ on older firmware |
 | `OYG_AGGRESSIVE=1` (services) | also stops `iot-client` + `pushclient` (luna-launched AWS IoT MQTT + LG push channel; `systemctl stop` is a no-op for the actual process, so the module `kill`s it and re-kills on every boot) | ThinQ app, voice control, push notifications; may be re-spawned on demand by `ls-hubd` (boot hook is best-effort, not permanent) |
 | `OYG_AGGRESSIVE=1` (perms) | chmods webOSbrew hbchannel + Google Home runtime | webOSbrew updates, Google Home on TV |
 | `OYG_AGGRESSIVE=1` (remoteone) | chmods `/mnt/lg/cmn_data` from 0777 to 0755 | vendor apps that rely on that directory being world-writable |
@@ -312,7 +342,8 @@ risky behaviour. **Read the linked findings in `docs/FINDINGS.md` first.**
 | `OYG_NETWORK_STRICT=1` | includes the STRICT blocklist section | ThinQ app, voice control, push notifications, LG home-screen card delivery |
 | `OYG_NETWORK_IPBLOCK=1` | also applies layer 3 (per-IP `ip route add blackhole`) | anything whose IPs happen to be near the listed hosts (CDNs change!) |
 | `OYG_DNS_OVERRIDE=1` | backs up `/var/lib/misc/resolv.conf` and writes `nameserver <default-gw>` | any DNS consumer that does NOT honour `/etc/hosts` (e.g. `nslookup`, some webOS daemons) |
-| `OYG_DNS_RESOLVER=1` (network, layer 4) | installs an on-device DNS sinkhole resolver (UDP + TCP, pure Python stdlib) and hooks it in via a **`/etc/resolv.conf` bind-mount**: the managed file lists only the sink (`OYG_DNS_FALLBACK=1` adds the real DHCP-learned upstream as a second nameserver, as older versions did; see F47). The resolver is started and verified answering BEFORE the override goes in; an auto-revert timer (180 s) unmounts an unconfirmed apply. Substring/suffix-match covers subdomains in one rule. Watchdog re-asserts resolv.conf and reverts the override if the resolver dies and won't restart. The bind address comes from `$OYG_ROOT/dns.bind` (`127.0.0.2` by default; `127.0.0.1` under Variant C — see F44). | anything that resolves through `/etc/resolv.conf` (libc `getaddrinfo`, most daemons) and `nslookup`/BusyBox resolution. The ConnMan *settings* route is **rejected on this device**: editing connman's settings + nudging connmand (no `ExecReload` → SIGHUP) took the TV off the network for ~30 min, so this toolkit NEVER signals, reloads or restarts connmand (see the post-mortem in `scripts/dns.sh`). The launcher-patch route (`scripts/go-c.sh`, `-r --nodnsproxy`) is the supported way to close the loopback path: with the sink running, `sh /var/lib/own-your-glass/scripts/go-c.sh --check` shows what it found on the TV and what it would do, and `nohup sh /var/lib/own-your-glass/scripts/go-c.sh </dev/null &` does it (it restarts connmand once, with a 660 s rollback armed; `scripts/rollback-c.sh` undoes it). Worst-case rollback is `umount` — the TV falls back to ConnMan's own resolv.conf. With the sink as the only nameserver, a dead resolver means failed lookups until the watchdog restarts it or reverts the override (15 s checks). |
+| `OYG_DNS_RESOLVER=1` (network, layer 4) | installs an on-device DNS sinkhole resolver (UDP + TCP, `scripts/dnssink.js`, plain Node.js) and hooks it in via a **`/etc/resolv.conf` bind-mount**: the managed file lists only the sink (`OYG_DNS_FALLBACK=1` adds the real DHCP-learned upstream as a second nameserver, as older versions did; see F47). The resolver is started and verified answering BEFORE the override goes in; an auto-revert timer (180 s) unmounts an unconfirmed apply. Substring/suffix-match covers subdomains in one rule. Watchdog re-asserts resolv.conf and reverts the override if the resolver dies and won't restart. The bind address comes from `$OYG_ROOT/dns.bind` (`127.0.0.2` by default; `127.0.0.1` under Variant C — see F44). | anything that resolves through `/etc/resolv.conf` (libc `getaddrinfo`, most daemons) and `nslookup`/BusyBox resolution. The ConnMan *settings* route is **rejected on this device**: editing connman's settings + nudging connmand (no `ExecReload` → SIGHUP) took the TV off the network for ~30 min, so this toolkit NEVER signals, reloads or restarts connmand (see the post-mortem in `scripts/dns.sh`). The launcher-patch route (`scripts/go-c.sh`, `-r --nodnsproxy`) is the supported way to close the loopback path: with the sink running, `sh /var/lib/own-your-glass/scripts/go-c.sh --check` shows what it found on the TV and what it would do, and `nohup sh /var/lib/own-your-glass/scripts/go-c.sh </dev/null &` does it (it restarts connmand once, with a 660 s rollback armed; `scripts/rollback-c.sh` undoes it). Worst-case rollback is `umount` — the TV falls back to ConnMan's own resolv.conf. With the sink as the only nameserver, a dead resolver means failed lookups until the watchdog restarts it or reverts the override (15 s checks). |
+| `OYG_DNS_VARIANT_C=1` (network, with layer 4) | runs `scripts/go-c.sh` once the sink is up: ConnMan restarts with its own DNS proxy off (`-r`) and the sink takes over `127.0.0.1:53`, so LG's services that ask ConnMan directly go through the blocklist too (F44). Skipped when it is already on. Re-applied at every boot; `oyg restore` and DNS blocking: Turn off undo it | Wi-Fi drops for 7–30 s each time ConnMan restarts (on, off, and once per boot); a 660 s rollback is armed and cancelled only after the blocked and allowed checks pass |
 | `OYG_LAUNCHER=1` (launcher) | turns LG's ad / promotion / Smart Tips / sports-alert / Live Plus settings off and limit-ad-tracking on, hides the apps LG pushes (stubs, Rakuten TV, LG Streaming Week, 8 Ball Pool) with their quick cards, and prunes the push list | those LG features; Rakuten TV is hidden too (`OYG_LAUNCHER_KEEP="ui30"` keeps it) |
 | `OYG_LAUNCHER_TRIM=1` (launcher) | also switches the home to the wallpaper layout (quick cards and recommendation shelves removed, the banner area grown into a wallpaper, apps docked below; bind-mounted `home.xml` and pictures, home restarted); or a list of item IDs to hide instead, e.g. `"herobanner qcardList recommendedShelf"` for the black minimal layout; `0` puts the stock layout back | the "Recent inputs" and tips rows go with the shelves; use the Live TV tile or the input button instead |
 | `OYG_LAUNCHER_WALLPAPER=<file>` (launcher) | uses your own picture for the wallpaper layout (PNG; any size, it is scaled to cover 3492x1450); `default` goes back to the toolkit's | nothing |
@@ -388,7 +419,8 @@ travels with the app.
   partition; it only bind-mounts over user-writable paths (or vendor
   paths that `mount --bind` can legally target) and stops processes.
 - **Everything is reversible.** `oyg restore` (or `uninstall.sh`) puts
-  the device back to the pre-install state.
+  back what the toolkit changed, and only that; see
+  [what restore puts back](#install-on-the-tv).
 - **For hardware you own.** Root access and OS-level hardening are
   legitimate on a device you own, but may void your warranty and may
   violate terms of service in your jurisdiction. Run at your own risk.

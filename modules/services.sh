@@ -100,8 +100,9 @@ _mod_services_drop_stopped() {
         return 0
     fi
     tmp=$(mktemp 2>/dev/null) || return 1
-    grep -Fvx -- "$unit" "$STOPPED_LIST" >"$tmp" 2>/dev/null \
-        && mv "$tmp" "$STOPPED_LIST"
+    # grep exits 1 when nothing is left (this was the last entry): fine.
+    grep -Fvx -- "$unit" "$STOPPED_LIST" >"$tmp" 2>/dev/null
+    [ $? -le 1 ] && mv "$tmp" "$STOPPED_LIST"
     rm -f "$tmp" 2>/dev/null
     return 0
 }
@@ -134,8 +135,9 @@ _mod_services_drop_kill() {
         return 0
     fi
     tmp=$(mktemp 2>/dev/null) || return 1
-    grep -Fvx -- "$proc" "$KILL_LIST" >"$tmp" 2>/dev/null \
-        && mv "$tmp" "$KILL_LIST"
+    # grep exits 1 when nothing is left (this was the last entry): fine.
+    grep -Fvx -- "$proc" "$KILL_LIST" >"$tmp" 2>/dev/null
+    [ $? -le 1 ] && mv "$tmp" "$KILL_LIST"
     rm -f "$tmp" 2>/dev/null
     return 0
 }
@@ -295,7 +297,10 @@ mod_services_harden() {
         prev_unit_state="${is_active}/${is_enabled}"
         prev_proc_state=$([ -n "$(_mod_services_pids_for "$proc")" ] \
             && printf 'running' || printf 'stopped')
-        state_put "services.${id}.prev" "${prev_unit_state}|proc=${prev_proc_state}"
+        # Once: after a reboot the boot hook has already stopped the unit,
+        # and recording that would make restore leave it stopped.
+        [ -n "$(state_get "services.${id}.prev")" ] \
+            || state_put "services.${id}.prev" "${prev_unit_state}|proc=${prev_proc_state}"
 
         unit_stopped=0
         unit_note=""
@@ -370,7 +375,9 @@ mod_services_restore() {
     have systemctl || [ "$OYG_DRY_RUN" = "1" ] \
         || { err "systemctl not found"; return 1; }
 
-    for spec in $(_mod_services_active_specs); do
+    # Every spec, aggressive ones included: a plain restore after an
+    # OYG_AGGRESSIVE=1 harden must undo those too.
+    for spec in $(_mod_services_load_specs); do
         id=$(printf '%s' "$spec"   | awk -F'|' '{print $1}')
         unit=$(printf '%s' "$spec" | awk -F'|' '{print $2}')
         proc=$(printf '%s' "$spec" | awk -F'|' '{print $3}')
@@ -379,24 +386,34 @@ mod_services_restore() {
         [ -z "$proc" ] && proc=$id
 
         prev=$(state_get "services.${id}.prev")
+        if [ -z "$prev" ] \
+            && ! grep -Fxq -- "$unit" "$STOPPED_LIST" 2>/dev/null \
+            && ! grep -Fxq -- "$proc" "$KILL_LIST" 2>/dev/null; then
+            continue
+        fi
         was_active=$(printf '%s' "$prev" | awk -F'|' '{print $1}' | cut -d/ -f1)
 
+        # Started if it was running, or if systemd starts it at boot
+        # (enabled): versions before 0.8.12 re-recorded the state after the
+        # boot hook had stopped it, so "inactive" there is not the original.
+        start_reason=""
         if [ "$was_active" = "active" ]; then
-            if _mod_services_stop_unit "$unit" 2>/dev/null || true; then
-                if [ "$(_mod_services_unit_present "$unit")" = "1" ]; then
-                    if run systemctl start "$unit" 2>/dev/null; then
-                        ok "services: $id unit <$unit> started (restored)"
-                    else
-                        warn "services: start $unit failed (will leave stopped)"
-                    fi
-                fi
+            start_reason="was running"
+        elif [ "$OYG_DRY_RUN" != "1" ] && [ "$(_mod_services_query "$unit" is-enabled)" = "enabled" ]; then
+            start_reason="LG starts it at boot"
+        fi
+        if [ -n "$start_reason" ] && [ "$(_mod_services_unit_present "$unit")" = "1" ]; then
+            if run systemctl start "$unit" 2>/dev/null; then
+                ok "services: $id unit <$unit> started ($start_reason)"
+            else
+                warn "services: start $unit failed (LG starts it at the next boot)"
             fi
         else
-            ok "services: $id left stopped (unit was not active originally: $was_active)"
+            ok "services: $id left stopped (not running before, not started at boot)"
         fi
 
         if [ -n "$(_mod_services_pids_for "$proc")" ]; then
-            warn "services: $id process <$proc> is still running; not restarting (luna-launched / on-demand — will respawn if requested)"
+            ok "services: $id process <$proc> running"
         else
             ok "services: $id process <$proc> left stopped (on-demand service; will respawn if requested by the system)"
         fi
@@ -405,6 +422,13 @@ mod_services_restore() {
         _mod_services_drop_kill "$proc"
         state_drop "services.${id}.prev"
     done
+    # Entries no spec names any more (retired in an update) would otherwise
+    # be stopped and killed on every boot for good.
+    if [ "$OYG_DRY_RUN" != "1" ]; then
+        [ -s "$STOPPED_LIST" ] && ok "services: cleared boot stop list entries left by older versions: $(tr '\n' ' ' <"$STOPPED_LIST")"
+        [ -s "$KILL_LIST" ] && ok "services: cleared boot kill list entries left by older versions: $(tr '\n' ' ' <"$KILL_LIST")"
+        rm -f "$STOPPED_LIST" "$KILL_LIST"
+    fi
     state_drop "services.applied"
 }
 

@@ -13,7 +13,7 @@
 #   pidof                     ~0.09s
 #   grep /proc/mounts         ~0.01s
 #   readlink / sysfs          ~0.01s
-#   python3 for one JSON read ~0.11s
+#   luna-send + awk JSON read ~0.03s
 # It deliberately checks *observable effect* (is the microphone endpoint
 # bound? is the process gone?) rather than systemd's bookkeeping.
 #
@@ -27,7 +27,11 @@
 
 OYG_ROOT=/var/lib/own-your-glass
 HOSTS=$OYG_ROOT/hosts
-BL=/var/preferences/com.webos.applicationManager/blockedSystemAppList/ESP.json
+# oyg_luna and the JSON reader (oyg_jget/oyg_jlist): BusyBox awk, no Python.
+. "$(dirname -- "$0")/../lib/common.sh"
+# The region file the apps module manages (ESP in Spain, GBR in the UK, ...).
+BL=$(sed -n 's/^apps.path=//p' "$OYG_ROOT/state" 2>/dev/null)
+[ -n "$BL" ] || for BL in /var/preferences/com.webos.applicationManager/blockedSystemAppList/*.json; do break; done
 
 is_mount() {
     # A path is "mounted" iff it appears as a mount point in mountinfo
@@ -72,7 +76,8 @@ printf 'NETWORK|NA|DoH/443 + DoT/853 cannot be blocked on-device (no netfilter)\
 
 # ------------------------------------------------------------------- DNS ----
 grp DNS "DNS sinkhole"
-pid=$(pgrep -f dnssink.py 2>/dev/null | head -1)
+pid=$(cat "$OYG_ROOT/dns.pid" 2>/dev/null)
+grep -q dnssink "/proc/${pid:-0}/cmdline" 2>/dev/null || pid=""
 bind=$(cat "$OYG_ROOT/dns.bind" 2>/dev/null || echo 127.0.0.2)
 if [ -n "$pid" ]; then
     printf 'DNS|OK|resolver running (pid %s) on %s:53\n' "$pid" "$bind"
@@ -135,41 +140,43 @@ done
     || printf 'DEBLOAT|WARN|still running:%s\n' "$alive"
 # Background apps, also read from the installed module: none loaded behind
 # what is on screen, and LG's preload off for the ones marked "preload".
-sed -n "/^DEBLOAT_APPS_SPEC='/,/^'/p" "$OYG_ROOT/modules/debloat.sh" 2>/dev/null | grep '|' |
-python3 -c '
-import json, subprocess, sys
-def luna(uri):
-    try:
-        p = subprocess.Popen(["luna-send", "-n", "1", "-w", "5000", uri, "{}"],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        return json.loads(p.communicate(timeout=8)[0] or b"{}")
-    except Exception:
-        return {}
-spec = [l.split("|", 1) for l in sys.stdin.read().split()]
-if not spec:
-    sys.exit(0)
-fg = luna("luna://com.webos.applicationManager/getForegroundAppInfo").get("appId")
-running = {a.get("id") for a in luna("luna://com.webos.applicationManager/running").get("running", [])}
-pre = {a.get("id"): a.get("isEnabled")
-       for a in luna("luna://com.webos.service.preloadmanager/getPreloadPolicy").get("applications", [])}
-loaded = [a for a, how in spec if "close" in how.split(",") and a in running and a != fg]
-want = [a for a, how in spec if "preload" in how.split(",") and a in pre]
-on = [a for a in want if pre[a]]
-if loaded:
-    print("DEBLOAT|WARN|loaded in the background: " + " ".join(loaded))
-else:
-    print("DEBLOAT|OK|0 unwanted apps loaded in the background")
-if want:
-    if on:
-        print("DEBLOAT|WARN|LG preload still on: " + " ".join(on))
-    else:
-        print("DEBLOAT|OK|LG preload off for %d of %d apps" % (len(want), len(want)))
-'
+spec=$(sed -n "/^DEBLOAT_APPS_SPEC='/,/^'/p" "$OYG_ROOT/modules/debloat.sh" 2>/dev/null | grep '|')
+if [ -n "$spec" ]; then
+    fg=$(oyg_luna luna://com.webos.applicationManager/getForegroundAppInfo '{}' | oyg_jget appId)
+    running=$(oyg_luna luna://com.webos.applicationManager/running '{}' | oyg_jlist running id)
+    pre=$(oyg_luna luna://com.webos.service.preloadmanager/getPreloadPolicy '{}' | oyg_jlist applications id isEnabled)
+    loaded=""; want=0; on=""
+    for sp in $spec; do
+        app=${sp%%|*}; how=${sp#*|}
+        case ",$how," in *,close,*)
+            [ "$app" != "$fg" ] && printf '%s\n' "$running" | grep -qxF -- "$app" && loaded="$loaded $app" ;;
+        esac
+        case ",$how," in *,preload,*)
+            v=$(printf '%s\n' "$pre" | awk -v a="$app" '$1 == a { print $2; exit }')
+            if [ -n "$v" ]; then
+                want=$((want + 1))
+                [ "$v" = "true" ] && on="$on $app"
+            fi ;;
+        esac
+    done
+    if [ -n "$loaded" ]; then
+        printf 'DEBLOAT|WARN|loaded in the background:%s\n' "$loaded"
+    else
+        printf 'DEBLOAT|OK|0 unwanted apps loaded in the background\n'
+    fi
+    if [ "$want" -gt 0 ]; then
+        if [ -n "$on" ]; then
+            printf 'DEBLOAT|WARN|LG preload still on:%s\n' "$on"
+        else
+            printf 'DEBLOAT|OK|LG preload off for %s of %s apps\n' "$want" "$want"
+        fi
+    fi
+fi
 
 # ------------------------------------------------------------------ APPS ----
 grp APPS "Hidden apps"
 if [ -r "$BL" ]; then
-    n=$(python3 -c "import json;print(len(json.load(open('$BL')).get('blocked_system_applist',[])))" 2>/dev/null)
+    n=$(oyg_jflat <"$BL" | grep -c '^blocked_system_applist\[')
     printf 'APPS|OK|%s apps hidden from the launcher\n' "${n:-?}"
 else
     printf 'APPS|FAIL|blocklist not found\n'
@@ -180,40 +187,30 @@ fi
 # list is read from the module so it is defined in one place.
 grp LAUNCHER "Home screen"
 if grep -q '^launcher.applied=1' "$OYG_ROOT/state" 2>/dev/null; then
-    sed -n "/^LAUNCHER_SETTINGS='/,/^'/p" "$OYG_ROOT/modules/launcher.sh" 2>/dev/null | grep ':' |
-    python3 -c '
-import json, subprocess, sys
-def luna(uri, params):
-    try:
-        p = subprocess.Popen(["luna-send", "-n", "1", "-w", "5000", uri, json.dumps(params)],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        return json.loads(p.communicate(timeout=8)[0] or b"{}")
-    except Exception:
-        return {}
-want = {}
-for l in sys.stdin.read().split():
-    cat, kv = l.split(":", 1)
-    k, v = kv.split("=", 1)
-    want.setdefault(cat, {})[k] = v
-total = good = 0
-for cat, kv in want.items():
-    got = luna("luna://com.webos.settingsservice/getSystemSettings",
-               {"category": cat, "keys": list(kv)}).get("settings", {})
-    for k, v in kv.items():
-        if k in got:
-            total += 1
-            good += got[k] == v
-lvl = "OK" if good == total else "FAIL"
-print("LAUNCHER|%s|%d of %d LG ad and promo settings off" % (lvl, good, total))
-hidden = sys.argv[1].split()
-if hidden:
-    lps = luna("luna://com.webos.service.homelaunchpoints/listLaunchPoints", {}).get("launchPoints", [])
-    back = [p for p in lps if p.get("launchPointId") in hidden]
-    if back:
-        print("LAUNCHER|FAIL|%d of %d pushed apps are back on the app bar" % (len(back), len(hidden)))
-    else:
-        print("LAUNCHER|OK|%d pushed apps hidden from the app bar" % len(hidden))
-' "$(sed -n 's/^launcher.hidden=//p' "$OYG_ROOT/state" 2>/dev/null)"
+    total=0; good=0
+    for sp in $(sed -n "/^LAUNCHER_SETTINGS='/,/^'/p" "$OYG_ROOT/modules/launcher.sh" 2>/dev/null | grep ':'); do
+        cat=${sp%%:*}; kv=${sp#*:}
+        got=$(oyg_setting_get "$cat" "${kv%%=*}")
+        [ -n "$got" ] || continue
+        total=$((total + 1))
+        [ "$got" = "${kv#*=}" ] && good=$((good + 1))
+    done
+    printf 'LAUNCHER|%s|%s of %s LG ad and promo settings off\n' \
+        "$([ "$good" = "$total" ] && echo OK || echo FAIL)" "$good" "$total"
+    hidden=$(sed -n 's/^launcher.hidden=//p' "$OYG_ROOT/state" 2>/dev/null)
+    if [ -n "$hidden" ]; then
+        lps=$(oyg_luna luna://com.webos.service.homelaunchpoints/listLaunchPoints '{}' | oyg_jlist launchPoints launchPointId)
+        nh=0; back=0
+        for lp in $hidden; do
+            nh=$((nh + 1))
+            printf '%s\n' "$lps" | grep -qxF -- "$lp" && back=$((back + 1))
+        done
+        if [ "$back" -gt 0 ]; then
+            printf 'LAUNCHER|FAIL|%s of %s pushed apps are back on the app bar\n' "$back" "$nh"
+        else
+            printf 'LAUNCHER|OK|%s pushed apps hidden from the app bar\n' "$nh"
+        fi
+    fi
 else
     printf 'LAUNCHER|WARN|LG ad settings and pushed apps untouched (Apply hardening handles them)\n'
 fi
@@ -262,12 +259,7 @@ acc=0
 for f in /mnt/lg/cmn_data/sdp/eula-service/eula.json /mnt/lg/cache/sdp/eula-service/eula.json \
          /mnt/lg/user/sdp/eula-service/eula.json; do
     [ -r "$f" ] || continue
-    a=$(python3 -c "
-import json
-try:
-    d=json.load(open('$f')); print(sum(1 for e in d.get('statusList',[]) if e.get('status')=='A'))
-except Exception: print(0)
-" 2>/dev/null)
+    a=$(oyg_jflat <"$f" | awk -F'\t' '$1 ~ /^statusList\[[0-9]+\]\.status$/ && $2 == "A" { n++ } END { print n + 0 }')
     acc=$((acc + ${a:-0}))
 done
 [ "$acc" -eq 0 ] \

@@ -64,8 +64,8 @@ else
 fi
 
 # --- 2. let ConnMan use the DHCP resolvers again ----------------------------
-if command -v connmanctl >/dev/null 2>&1; then
-    svc=$(connmanctl services 2>/dev/null | awk '/^\*/{print $NF}' | head -1)
+if type connmanctl >/dev/null 2>&1; then
+    svc=$(connmanctl services 2>/dev/null | awk '/^\*/{print $NF}' | head -n 1)
     if [ -n "${svc:-}" ]; then
         # Only a loopback override is ours to clear; an empty list hands the
         # service back to the DHCP-provided resolvers.
@@ -86,7 +86,7 @@ if command -v connmanctl >/dev/null 2>&1; then
 fi
 
 # --- 3. last-resort static address ------------------------------------------
-v4=$(ip -4 addr show "$WIFI_IF" 2>/dev/null | awk '/inet /{print $2}' | head -1)
+v4=$(ip -4 addr show "$WIFI_IF" 2>/dev/null | awk '/inet /{print $2}' | head -n 1)
 if [ -n "$v4" ]; then
     say "OK   $WIFI_IF already has $v4 — no static fallback needed"
 elif [ -n "${GW:-}" ]; then
@@ -113,8 +113,8 @@ say "== final state =="
 say "   interfaces: $(ip -4 addr show "$WIFI_IF" 2>/dev/null | awk '/inet /{printf "%s ", $2}')"
 resolv=$(grep -h '^nameserver' /etc/resolv.conf 2>/dev/null | tr '\n' ' ')
 say "   resolv.conf: ${resolv:-<none>}"
-if command -v nslookup >/dev/null 2>&1; then
-    ans=$(nslookup github.com 2>/dev/null | awk '/^Address/ && !/#53$/{print $2}' | tail -1)
+if type nslookup >/dev/null 2>&1; then
+    ans=$(nslookup github.com 2>/dev/null | awk '/^Address/ && !/#53$/{print $2}' | tail -n 1)
     say "   test lookup (github.com): ${ans:-FAILED}"
 else
     say "   test lookup: skipped (no nslookup)"

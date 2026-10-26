@@ -34,7 +34,7 @@ set -eu
 
 OYG_HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { type "$1" >/dev/null 2>&1; }
 log()  { printf '[sniff] %s\n' "$*"; }
 err()  { printf '[sniff] ERR  %s\n' "$*" >&2; }
 

@@ -18,7 +18,7 @@ INIT_HOOK="$INITD/oyg"
 log()  { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] WARN %s\n' "$*" >&2; }
 err()  { printf '[install] ERR  %s\n' "$*" >&2; }
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { type "$1" >/dev/null 2>&1; }
 
 require_root() {
     if [ "$(id -u 2>/dev/null)" != "0" ]; then
@@ -49,7 +49,12 @@ install_files() {
     log "installing files to $OYG_DST"
     mkdir -p "$OYG_DST/lib" "$OYG_DST/modules" "$OYG_DST/etc" "$OYG_DST/backup" "$OYG_DST/watchers" "$OYG_DST/scripts"
     cp "$OYG_SRC/oyg" "$OYG_DST/oyg"
+    # On the TV too, so it can take itself off without the source tree.
+    cp "$OYG_SRC/uninstall.sh" "$OYG_DST/uninstall.sh"
     cp "$OYG_SRC/lib/common.sh" "$OYG_DST/lib/common.sh"
+    # Replaced by dnssink.js in 0.8.12 (a sink still running from it is
+    # left alone and swapped at its next restart).
+    rm -f "$OYG_DST/scripts/dnssink.py"
     for f in "$OYG_SRC/modules"/*.sh; do
         [ -f "$f" ] || continue
         cp "$f" "$OYG_DST/modules/$(basename "$f")"
@@ -61,14 +66,14 @@ install_files() {
     # scripts/ — operator tools that must be runnable from the device
     # (sniffer, DNS sinkhole resolver + wrapper + watchdog). Off-device
     # tools (workstation-only) are excluded so the TV copy stays lean.
-    for f in "$OYG_SRC"/scripts/*.sh "$OYG_SRC"/scripts/*.py; do
+    for f in "$OYG_SRC"/scripts/*.sh "$OYG_SRC"/scripts/*.py "$OYG_SRC"/scripts/*.js; do
         [ -f "$f" ] || continue
         case "$(basename "$f")" in
             build-app.sh|refresh-blocklist.sh) continue ;;
         esac
         cp "$f" "$OYG_DST/scripts/$(basename "$f")"
     done
-    chmod 0755 "$OYG_DST/oyg"
+    chmod 0755 "$OYG_DST/oyg" "$OYG_DST/uninstall.sh"
     chmod 0644 "$OYG_DST/lib/common.sh" 2>/dev/null || true
     for f in "$OYG_DST/etc"/*.txt "$OYG_DST/etc"/*.png; do
         [ -f "$f" ] || continue
@@ -82,7 +87,7 @@ install_files() {
         [ -f "$f" ] || continue
         chmod 0755 "$f"
     done
-    for f in "$OYG_DST/scripts"/*.py; do
+    for f in "$OYG_DST/scripts"/*.py "$OYG_DST/scripts"/*.js; do
         [ -f "$f" ] || continue
         chmod 0755 "$f"
     done
@@ -167,7 +172,11 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # bind-mount does not survive reboot, so re-apply it here. The restart
     # drops Wi-Fi for 7-27 s; with resolv.conf already fail-closed, nothing
     # resolves through ConnMan in the meantime.
+    # Only while the sink is wanted: dns.sh stop (Undo, DNS off, Restore
+    # network) records network.dns_resolver=0 and removes dns.bind.
     if [ "\$(cat $OYG_DST/dns.bind 2>/dev/null)" = "127.0.0.1" ] \\
+        && grep -q '^network.applied=1' "\$STATE" 2>/dev/null \\
+        && grep -q '^network.dns_resolver=1' "\$STATE" 2>/dev/null \\
         && [ -x $OYG_DST/connman.sh.patched ] \\
         && ! awk '\$5=="/etc/systemd/system/scripts/connman.sh"{f=1} END{exit !f}' /proc/self/mountinfo; then
         echo "[boot-hook] C: mounting patched connman launcher (-r)"
@@ -176,10 +185,10 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
             && systemctl restart connman
         n=0
         while [ \$n -lt 90 ]; do
-            ip -4 addr show wlan0 2>/dev/null | grep -q 'inet ' && break
+            ip route show default 2>/dev/null | grep -q '^default' && break
             sleep 1; n=\$((n + 1))
         done
-        echo "[boot-hook] C: connman restarted (wlan0 wait \${n}s)"
+        echo "[boot-hook] C: connman restarted (network wait \${n}s)"
         echo "[boot-hook] C: resolv.conf names: \$(grep '^nameserver' /etc/resolv.conf | tr '\n' ' ')"
     fi
 
@@ -223,6 +232,9 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         if grep -q '^network.dns_resolver=1' "\$STATE"; then
             export OYG_DNS_RESOLVER=1
         fi
+        if grep -q '^network.variant_c=1' "\$STATE"; then
+            export OYG_DNS_VARIANT_C=1
+        fi
         $OYG_DST/oyg harden --only network
         # The network module's layer 4 (dns.sh start) is idempotent: it
         # brings the resolver up FIRST and only then points resolv.conf at
@@ -247,7 +259,14 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # them when related components update; re-touches the webOSbrew
     # update-blocker flag because touch is idempotent and the file does
     # not survive a firmware reset).
+    # Each only while wanted: 'oyg harden' records <module>.wanted=1 and
+    # 'oyg restore' (Undo hardening) drops it, so an undone module stays
+    # undone after a reboot.
     for m in capture mic voice logs remoteone apps policy; do
+        if ! grep -q "^\$m.wanted=1" "\$STATE" 2>/dev/null; then
+            echo "[boot-hook] \$m: not hardened — skipped"
+            continue
+        fi
         \$T $OYG_DST/oyg harden --only "\$m" || echo "[boot-hook] WARN: \$m failed or timed out"
     done
 
@@ -389,7 +408,20 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
 } >\$BOOT_LOG 2>&1
 EOF
     chmod 0755 "$INIT_HOOK"
-    log "boot hook installed at $INIT_HOOK (will re-apply capture/mic/voice/logs/remoteone/apps/policy, enforce services.stopped + services.kill, and state-gated: network (first), launcher, debloat, perms when previously applied)"
+    log "boot hook installed at $INIT_HOOK (re-applies what is hardened and not undone: network first, then capture/mic/voice/logs/remoteone/apps/policy, services, launcher, debloat, perms)"
+}
+
+# migrate_wanted — TVs hardened by a version before 0.8.12 have no
+# <module>.wanted keys, which the boot hook now needs. A module whose
+# <module>.applied=1 is still recorded was hardened and not undone.
+migrate_wanted() {
+    st="$OYG_DST/state"
+    [ -r "$st" ] || return 0
+    for m in capture mic voice logs remoteone apps policy; do
+        grep -q "^$m.wanted=" "$st" && continue
+        grep -q "^$m.applied=1" "$st" && printf '%s.wanted=1\n' "$m" >>"$st"
+    done
+    return 0
 }
 
 main() {
@@ -397,6 +429,7 @@ main() {
     require_supported
     require_dst_writable
     install_files
+    migrate_wanted
     install_watcher_templates
     install_init_hook
     cat <<EOF

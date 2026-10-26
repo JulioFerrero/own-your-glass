@@ -123,15 +123,6 @@ _mod_voice_harden_one() {
         return 0
     fi
 
-    # Record the original mode once. If we already recorded one in a
-    # previous harden run, reuse it so restore is exact.
-    orig=$(state_get "voice.${path}.prev")
-    if [ -z "$orig" ]; then
-        orig=$(_mod_voice_path_mode "$path")
-        [ -z "$orig" ] && orig="755"
-        state_put "voice.${path}.prev" "$orig"
-    fi
-
     # Idempotency: skip if already a mount point. We ask "is this a
     # mount point?" — see _mod_voice_is_bound for why we do NOT grep
     # for the literal /dev/null.
@@ -142,13 +133,22 @@ _mod_voice_harden_one() {
         return 0
     fi
 
+    # Record the original mode once, and only while the path is not bound:
+    # through a bind, stat reads /dev/null's 666.
+    orig=$(state_get "voice.${path}.prev")
+    if [ -z "$orig" ]; then
+        orig=$(_mod_voice_path_mode "$path")
+        [ -z "$orig" ] && orig="755"
+        state_put "voice.${path}.prev" "$orig"
+    fi
+
     # Strip exec + read perms first. A process that holds an open fd
     # cannot bypass the bind-mount, but stripping perms is a cheap
     # belt-and-braces on top of the bind.
     if run chmod 000 "$path" 2>/dev/null; then
         ok "voice: chmod 000 $path (was $orig)" >&2
     else
-        warn "voice: chmod 000 on $path denied (will still bind-mount)" >&2
+        ok "voice: $path is read-only — the bind-mount alone covers it" >&2
     fi
 
     # Replace the binary with /dev/null. Any exec() now reads zeros
@@ -258,14 +258,19 @@ mod_voice_restore() {
                     rc=1
                 fi
             else
-                warn "voice: $path was recorded as bound but is no longer mounted — leaving alone"
+                ok "voice: $path already unbound"
             fi
-            state_drop "voice.${path}.bound"
         fi
+        # Still bound: a chmod now would land on /dev/null. Keep the state
+        # for the next restore.
+        if [ "$OYG_DRY_RUN" != "1" ] && [ "$(_mod_voice_is_bound "$path")" = "1" ]; then
+            continue
+        fi
+        state_drop "voice.${path}.bound"
 
         if [ -n "$orig" ] && [ "$orig" != "0" ] && [ -e "$path" ]; then
-            if run chmod "$orig" "$path" 2>/dev/null; then
-                ok "voice: $path mode restored to $orig"
+            if oyg_chmod_back "$path" "$orig"; then
+                ok "voice: $path mode is $orig"
             else
                 warn "voice: could not restore mode on $path to $orig"
                 rc=1

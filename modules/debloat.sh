@@ -345,8 +345,9 @@ _mod_debloat_drop_unit() {
         return 0
     fi
     tmp=$(mktemp 2>/dev/null) || return 1
-    grep -Fvx -- "$unit" "$DEBLOAT_UNITS_STOPPED_LIST" >"$tmp" 2>/dev/null \
-        && mv "$tmp" "$DEBLOAT_UNITS_STOPPED_LIST"
+    # grep exits 1 when nothing is left (this was the last entry): fine.
+    grep -Fvx -- "$unit" "$DEBLOAT_UNITS_STOPPED_LIST" >"$tmp" 2>/dev/null
+    [ $? -le 1 ] && mv "$tmp" "$DEBLOAT_UNITS_STOPPED_LIST"
     rm -f "$tmp" 2>/dev/null
     return 0
 }
@@ -381,8 +382,9 @@ _mod_debloat_drop_proc() {
         return 0
     fi
     tmp=$(mktemp 2>/dev/null) || return 1
-    grep -Fvx -- "$proc" "$DEBLOAT_PROCS_KILL_LIST" >"$tmp" 2>/dev/null \
-        && mv "$tmp" "$DEBLOAT_PROCS_KILL_LIST"
+    # grep exits 1 when nothing is left (this was the last entry): fine.
+    grep -Fvx -- "$proc" "$DEBLOAT_PROCS_KILL_LIST" >"$tmp" 2>/dev/null
+    [ $? -le 1 ] && mv "$tmp" "$DEBLOAT_PROCS_KILL_LIST"
     rm -f "$tmp" 2>/dev/null
     return 0
 }
@@ -466,7 +468,7 @@ _mod_debloat_harden_one_bin() {
     if run chmod 000 "$path" 2>/dev/null; then
         ok "debloat: chmod 000 $path (was $orig)" >&2
     else
-        warn "debloat: chmod 000 on $path denied (will still bind-mount)" >&2
+        ok "debloat: $path is read-only — the bind-mount alone covers it" >&2
     fi
 
     if run mount --bind /dev/null "$path" 2>/dev/null; then
@@ -496,11 +498,11 @@ _mod_debloat_load_apps_spec() {
 # _mod_debloat_apps_snapshot — the foreground app, the running apps and the
 # preload switches, in three luna calls, so the per-app checks need none.
 _mod_debloat_apps_snapshot() {
-    DEBLOAT_FG=$(oyg_luna "$DEBLOAT_SAM_URI/getForegroundAppInfo" '{}' | oyg_json "d.get('appId')")
-    DEBLOAT_RUNNING=$(oyg_luna "$DEBLOAT_SAM_URI/running" '{}' \
-        | oyg_json "[a['id'] for a in d.get('running', [])]")
+    DEBLOAT_FG=$(oyg_luna "$DEBLOAT_SAM_URI/getForegroundAppInfo" '{}' | oyg_jget appId)
+    DEBLOAT_RUNNING=$(oyg_luna "$DEBLOAT_SAM_URI/running" '{}' | oyg_jlist running id)
+    # True/False as the state file has always stored them (restore reads them).
     DEBLOAT_PRELOAD=$(oyg_luna "$DEBLOAT_PRELOAD_URI/getPreloadPolicy" '{}' \
-        | oyg_json "['%s %s' % (a.get('id'), a.get('isEnabled')) for a in d.get('applications', [])]")
+        | oyg_jlist applications id isEnabled | sed 's/ true$/ True/; s/ false$/ False/')
 }
 
 # _mod_debloat_preload_get <appId> — True/False, empty when the preload
@@ -517,7 +519,7 @@ _mod_debloat_preload_set() {
     fi
     oyg_luna "$DEBLOAT_PRELOAD_URI/setPreloadPolicy" \
         "{\"application\":{\"id\":\"$1\",\"isEnabled\":$2}}" \
-        | oyg_json "d.get('returnValue')" | grep -q True
+        | oyg_jok
 }
 
 # _mod_debloat_app_state <appId> — "foreground", "background", or nothing
@@ -563,7 +565,7 @@ _mod_debloat_apps_harden() {
             else
                 [ -n "$(state_get "debloat.preload.${app}.prev")" ] \
                     || state_put "debloat.preload.${app}.prev" "$cur"
-                if [ "$cur" = "False" ]; then
+                if [ "$cur" = "False" ] || [ "$cur" = "false" ]; then
                     ok "debloat: $app — preload already off"
                 elif _mod_debloat_preload_set "$app" false; then
                     ok "debloat: $app — preload switched off"
@@ -602,11 +604,12 @@ _mod_debloat_apps_restore() {
         prev=$(state_get "debloat.preload.${app}.prev")
         [ -n "$prev" ] || continue
         v=false
-        [ "$prev" = "True" ] && v=true
+        case "$prev" in True|true) v=true ;; esac
         if _mod_debloat_preload_set "$app" "$v"; then
             ok "debloat: $app — preload set back to $v"
         else
             warn "debloat: $app — could not set its preload back to $v (the next boot resets it)"
+            continue
         fi
         state_drop "debloat.preload.${app}.prev"
     done
@@ -637,6 +640,8 @@ _mod_debloat_retire_stale() {
         if [ "$(_mod_debloat_is_bound "$path")" = "1" ]; then
             run umount "$path" 2>/dev/null && ok "debloat: $path no longer targeted — unbound"
         fi
+        # Still bound: a chmod would land on /dev/null; try again next time.
+        [ "$OYG_DRY_RUN" != "1" ] && [ "$(_mod_debloat_is_bound "$path")" = "1" ] && continue
         prev=$(state_get "debloat.bin.${path}.prev")
         [ -n "$prev" ] && [ -e "$path" ] && run chmod "$prev" "$path" 2>/dev/null
         state_drop "debloat.bin.${path}.prev"
@@ -876,7 +881,7 @@ mod_debloat_restore() {
         # preloaded. The system respawns them on demand if requested.
         if [ -n "$proc" ]; then
             if [ -n "$(_mod_debloat_pids_for "$proc")" ]; then
-                warn "debloat: $id process <$proc> is still running; not restarting (on-demand — will respawn if requested)"
+                ok "debloat: $id process <$proc> running"
             else
                 ok "debloat: $id process <$proc> left stopped (on-demand — will respawn if requested)"
             fi
@@ -911,14 +916,19 @@ mod_debloat_restore() {
                     rc=1
                 fi
             else
-                warn "debloat: $path was recorded as bound but is no longer mounted — leaving alone"
+                ok "debloat: $path already unbound"
             fi
-            state_drop "debloat.bin.${path}.bound"
         fi
+        # Still bound: a chmod now would land on /dev/null. Keep the state
+        # for the next restore.
+        if [ "$OYG_DRY_RUN" != "1" ] && [ "$(_mod_debloat_is_bound "$path")" = "1" ]; then
+            continue
+        fi
+        state_drop "debloat.bin.${path}.bound"
 
         if [ -n "$orig" ] && [ "$orig" != "0" ] && [ -e "$path" ]; then
-            if run chmod "$orig" "$path" 2>/dev/null; then
-                ok "debloat: $path mode restored to $orig"
+            if oyg_chmod_back "$path" "$orig"; then
+                ok "debloat: $path mode is $orig"
             else
                 warn "debloat: could not restore mode on $path to $orig"
                 rc=1
@@ -929,6 +939,16 @@ mod_debloat_restore() {
 
     _mod_debloat_retire_stale all
     _mod_debloat_apps_restore
+    # Units and processes no spec names any more (uploadd, retired in an
+    # update) would otherwise be stopped and killed on every boot for good.
+    if [ "$OYG_DRY_RUN" != "1" ]; then
+        [ -s "$DEBLOAT_UNITS_STOPPED_LIST" ] && ok "debloat: cleared boot stop list entries left by older versions: $(tr '\n' ' ' <"$DEBLOAT_UNITS_STOPPED_LIST")"
+        [ -s "$DEBLOAT_PROCS_KILL_LIST" ] && ok "debloat: cleared boot kill list entries left by older versions: $(tr '\n' ' ' <"$DEBLOAT_PROCS_KILL_LIST")"
+        rm -f "$DEBLOAT_UNITS_STOPPED_LIST" "$DEBLOAT_PROCS_KILL_LIST"
+        for k in $(sed -n 's/^\(debloat\.unit\.[^=]*\.prev\)=.*/\1/p' "$OYG_STATE" 2>/dev/null); do
+            state_drop "$k"
+        done
+    fi
     state_drop "debloat.applied"
     return $rc
 }

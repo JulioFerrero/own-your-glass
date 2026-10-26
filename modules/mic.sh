@@ -216,21 +216,21 @@ mod_mic_harden() {
             continue
         fi
 
-        # Record the original mode once. If we already recorded one for
-        # this node in a previous harden run, reuse it so restore is exact.
-        orig=$(state_get "mic.node.${base}.mode.orig")
-        if [ -z "$orig" ]; then
-            orig=$(mod_mic_node_mode "$n")
-            [ -z "$orig" ] && orig="660"
-            state_put "mic.node.${base}.mode.orig" "$orig"
-        fi
-
         already=$(mod_mic_is_bound "$n")
         if [ "$already" = "1" ]; then
             ok "mic: $n already bind-mounted to /dev/null (idempotent)"
             state_put "mic.node.${base}.bound" "1"
             bound_count=$((bound_count + 1))
             continue
+        fi
+
+        # Record the original mode once, and only while the node is not
+        # bound: through a bind, stat reads /dev/null's 666.
+        orig=$(state_get "mic.node.${base}.mode.orig")
+        if [ -z "$orig" ]; then
+            orig=$(mod_mic_node_mode "$n")
+            [ -z "$orig" ] && orig="660"
+            state_put "mic.node.${base}.mode.orig" "$orig"
         fi
 
         # chmod 000 first — a process holding an open fd cannot bypass
@@ -266,8 +266,12 @@ mod_mic_harden() {
 mod_mic_restore() {
     require_root
 
-    nodes=$(mod_mic_list_capture_nodes)
-    [ -z "$nodes" ] && nodes=$(state_get "mic.last_nodes")
+    # The nodes present now plus every node harden recorded, so a node that
+    # is missing from /proc/asound right now is still restored.
+    nodes=$( { mod_mic_list_capture_nodes
+               awk -F= '$1 ~ /^mic\.node\..*\.(bound|mode\.orig)$/ {
+                   k = $1; sub(/^mic\.node\./, "", k); sub(/\.(bound|mode\.orig)$/, "", k)
+                   print "/dev/snd/" k }' "$OYG_STATE" 2>/dev/null; } | sort -u)
     rc=0
 
     for n in $nodes; do
@@ -287,14 +291,19 @@ mod_mic_restore() {
                     rc=1
                 fi
             else
-                warn "mic: $n was recorded as bound but is no longer mounted — leaving alone"
+                ok "mic: $n already unbound"
             fi
-            state_drop "mic.node.${base}.bound"
         fi
+        # Still bound: a chmod now would land on /dev/null. Keep the state
+        # for the next restore.
+        if [ "$OYG_DRY_RUN" != "1" ] && [ "$(mod_mic_is_bound "$n")" = "1" ]; then
+            continue
+        fi
+        state_drop "mic.node.${base}.bound"
 
         if [ -n "$orig" ] && [ "$orig" != "0" ] && [ -e "$n" ]; then
-            if run chmod "$orig" "$n" 2>/dev/null; then
-                ok "mic: $n mode restored to $orig"
+            if oyg_chmod_back "$n" "$orig"; then
+                ok "mic: $n mode is $orig"
             else
                 warn "mic: could not restore mode on $n to $orig"
                 rc=1

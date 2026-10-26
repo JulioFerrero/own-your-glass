@@ -390,7 +390,7 @@ function showSub(i) {
 }
 function hintFor(a) {
   return {
-    "apply": "Installs the toolkit into /var/lib/own-your-glass, drops the boot hook, then applies every hardening module. That includes LG's ad and promo settings, the apps LG pushes onto the app bar, HbbTV red-button apps and the phone remote-control API; the home screen layout is left as it is.",
+    "apply": "Installs the toolkit into /var/lib/own-your-glass, drops the boot hook, then applies every hardening module. That includes LG's ad and promo settings, the apps LG pushes onto the app bar, HbbTV red-button apps and the phone remote-control API. It also sets the Clean home layout and turns Variant C on (ConnMan's own DNS proxy off, so LG's services go through the blocklist too): Wi-Fi drops for 7-30 s, and the console says when the internet is back.",
     "check": "Re-reads the status of all subsystems.",
     "revert-all": "Runs oyg restore: every change this toolkit made is undone.",
     "dns-on": "Starts the DNS sinkhole and points the TV's lookups at it.",
@@ -471,10 +471,10 @@ function appDir() {
 function cmdFor(act, dir) {
   var T = dir + "/toolkit";
   return {
-    "apply":       "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + T + "/install.sh && OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 OYG_LAUNCHER=1 sh " + ROOT + "/oyg harden",
+    "apply":       "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + T + "/install.sh && OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 OYG_DNS_VARIANT_C=1 OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=1 sh " + ROOT + "/oyg harden",
     "check":       "sh " + ROOT + "/scripts/status-fast.sh",
     "revert-all":  "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + ROOT + "/oyg restore",
-    "dns-on":      "sh " + T + "/scripts/dns.sh start",
+    "dns-on":      "sh " + T + "/scripts/dns.sh start && if grep -q '^network.variant_c=1' " + ROOT + "/state; then sh " + T + "/scripts/go-c.sh </dev/null; fi",
     "dns-off":     "sh " + T + "/scripts/dns.sh stop",
     "home-clean":  "OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=1 sh " + T + "/oyg harden --only launcher",
     "home-stock":  "OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=0 sh " + T + "/oyg harden --only launcher",
@@ -518,12 +518,14 @@ function run(act) {
     if (ticker) clearInterval(ticker);
     poller = setInterval(function () { follow(); paintProgress(); }, 900);
     ticker = setInterval(paintProgress, 1000);
-    exec(": > " + ALOG + "; nohup sh -c " + sq(cmd + " >> " + ALOG + " 2>&1; echo @@EXIT:$? >> " + ALOG) +
+    /* The previous job's log stays as .prev, so Apply right after Undo
+       does not wipe what Undo printed. */
+    exec("mv -f " + ALOG + " " + ALOG + ".prev 2>/dev/null; : > " + ALOG + "; nohup sh -c " + sq(cmd + " >> " + ALOG + " 2>&1; echo @@EXIT:$? >> " + ALOG) +
          " >/dev/null 2>&1 </dev/null &", function () {
       follow();
       /* Watch the log for @@EXIT so the UI unlocks the moment the job is
          done; the timer is only a backstop in case the marker never comes. */
-      busyUntil = Date.now() + ((act === "apply" || act === "revert-all") ? 300000 :
+      busyUntil = Date.now() + ((act === "apply" || act === "revert-all") ? 600000 :
                                 /^home-/.test(act) ? 120000 : 60000);
     });
   });

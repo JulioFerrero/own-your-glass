@@ -14,8 +14,59 @@ ok()   { printf '[%s] OK   %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >&2; }
 err()  { printf '[%s] ERR  %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >&2; }
 
+# `type`, not `command -v`: ash builds without CONFIG_ASH_CMDCMD (OpenEmbedded's
+# BusyBox 1.24.1, the webOS 4 era) have no `command`, and every tool looked
+# missing.
 have() {
-    command -v "$1" >/dev/null 2>&1
+    type "$1" >/dev/null 2>&1
+}
+
+# oyg_retire_backup <file> — after a restore has put <file> back, move it to
+# <file>.restored: kept for the record, and the next harden takes a fresh
+# backup instead of reviving this one over changes made since.
+oyg_retire_backup() {
+    [ -e "$1" ] || return 0
+    [ "$OYG_DRY_RUN" = "1" ] && { printf 'DRY-RUN: mv %s %s.restored\n' "$1" "$1"; return 0; }
+    mv -f "$1" "$1.restored" 2>/dev/null
+}
+
+# oyg_chmod_back <path> <mode> — put <path> back to <mode>; nothing to do if
+# it already has it. Binaries on the read-only /usr refused harden's chmod
+# 000 too, so for them this is the common case, not a failure.
+oyg_chmod_back() {
+    _c_cur=$(stat -c '%a' "$1" 2>/dev/null | sed 's/^0*//')
+    [ -n "$_c_cur" ] && [ "$_c_cur" = "$(printf '%s' "$2" | sed 's/^0*//')" ] && return 0
+    run chmod "$2" "$1" 2>/dev/null
+}
+
+# oyg_mode_like <file> <tmp> [<original>] — give <tmp> the mode of the
+# backup of the original if given, else of <file>, else 0644, before it
+# replaces <file>. Temp files are 0600 under the toolkit's umask, LG's files
+# are 0644, and a file an older version rewrote may still carry its 0600.
+oyg_mode_like() {
+    _m_mode=""
+    [ -n "${3:-}" ] && [ -f "$3" ] && ! grep -q '^SENTINEL=absent' "$3" 2>/dev/null \
+        && _m_mode=$(stat -c '%a' "$3" 2>/dev/null)
+    [ -n "$_m_mode" ] || _m_mode=$(stat -c '%a' "$1" 2>/dev/null)
+    chmod "${_m_mode:-644}" "$2" 2>/dev/null
+    return 0
+}
+
+# oyg_nap <seconds> — sleep, fractions allowed; BusyBox built without
+# fractional sleep sleeps a whole second instead of not at all.
+oyg_nap() {
+    sleep "$1" 2>/dev/null || sleep 1
+}
+
+# oyg_pids_matching <text> — pids whose command line contains <text>, like
+# pgrep -f, which some BusyBox builds leave out.
+oyg_pids_matching() {
+    for _p_d in /proc/[0-9]*; do
+        [ "${_p_d#/proc/}" = "$$" ] && continue
+        tr '\0' ' ' <"$_p_d/cmdline" 2>/dev/null | grep -qF -- "$1" \
+            && printf '%s\n' "${_p_d#/proc/}"
+    done
+    return 0
 }
 
 require_root() {
@@ -26,18 +77,18 @@ require_root() {
 }
 
 # oyg_supported — true on firmware the toolkit has been run on: webOS 10
-# (webOS 25) with python3. Otherwise false, with the reason in
-# OYG_UNSUPPORTED. OYG_FORCE_UNSUPPORTED=1 accepts an older webOS; nothing
-# accepts a missing python3, since the DNS, policy, launcher and debloat
-# steps need it. On webOS 4 (BusyBox 1.2x, no python3) the modules half-ran
-# and left a TV that could neither restore nor factory reset.
+# (webOS 25). Otherwise false, with the reason in OYG_UNSUPPORTED.
+# OYG_FORCE_UNSUPPORTED=1 accepts an older webOS. node is required (the DNS
+# sink); every webOS TV ships it. On webOS 4 (BusyBox 1.24, no python3) an
+# older version half-ran and left a TV that could neither restore nor
+# factory reset (F52).
 OYG_MIN_WEBOS=10
 oyg_supported() {
     OYG_UNSUPPORTED=""
     _s_rel=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         /var/run/nyx/os_info.json 2>/dev/null | head -n 1)
-    if ! have python3; then
-        OYG_UNSUPPORTED="python3 is missing (webOS ${_s_rel:-unknown})"
+    if ! have node; then
+        OYG_UNSUPPORTED="node is missing (webOS ${_s_rel:-unknown})"
         return 1
     fi
     case "${_s_rel%%.*}" in
@@ -79,21 +130,96 @@ oyg_luna() {
     luna-send -n 1 -w 10000 -f "$1" "$2" </dev/null 2>/dev/null
 }
 
-# oyg_json <expr> — evaluate a Python expression over the JSON reply on
-# stdin (bound to d; json is imported). Lists print one item per line.
-oyg_json() {
-    python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-r = eval(sys.argv[1])
-if isinstance(r, (list, tuple)):
-    print("\n".join(str(x) for x in r))
-elif r is not None:
-    print(r)
-' "$1"
+# oyg_jflat — JSON on stdin as one "<path><TAB><value>" line per scalar,
+# e.g. "settings.hbbTV	off" or "apps[3].id	com.x". Strings lose their
+# quotes (\" \\ \/ decoded, \n \t \r become spaces); true, false, null and
+# numbers stay as written; an empty array or object prints as [] or {}.
+# BusyBox awk, no Python: works on any webOS. It walks one line at a time,
+# which luna-send -f output keeps short.
+oyg_jflat() {
+    awk '
+    function path(   p, i) {
+        p = ""
+        # No "name (" anywhere: awk before BusyBox 1.30 reads it as a call.
+        for (i = 1; i <= d; i++) {
+            if (t[i] == "a") p = p "[" n[i] "]"
+            else if (p == "") p = k[i]
+            else p = p "." k[i]
+        }
+        return p
+    }
+    function value(v) {
+        if (d > 0) m[d]++
+        if (d > 0 && t[d] == "a") n[d]++
+        printf "%s\t%s\n", path(), v
+        if (d > 0 && t[d] == "o") hk[d] = 0
+    }
+    function unesc(s) {
+        gsub(/\\\\/, "\002", s); gsub(/\\"/, "\"", s); gsub(/\\\//, "/", s)
+        gsub(/\\[ntr]/, " ", s); gsub(/\002/, "\\", s)
+        return s
+    }
+    {
+        l = $0
+        while (l != "") {
+            c = substr(l, 1, 1)
+            if (c == " " || c == "\t" || c == "\r" || c == ":" || c == ",") {
+                l = substr(l, 2)
+            } else if (c == "\"") {
+                if (!match(l, /^"([^"\\]|\\.)*"/)) { l = ""; break }
+                s = unesc(substr(l, 2, RLENGTH - 2)); l = substr(l, RLENGTH + 1)
+                if (d > 0 && t[d] == "o" && !hk[d]) { k[d] = s; hk[d] = 1 } else value(s)
+            } else if (c == "{" || c == "[") {
+                if (d > 0) m[d]++
+                if (d > 0 && t[d] == "a") n[d]++
+                d++; t[d] = (c == "{") ? "o" : "a"; n[d] = -1; hk[d] = 0; m[d] = 0
+                l = substr(l, 2)
+            } else if (c == "}" || c == "]") {
+                e = (m[d] == 0); ty = t[d]
+                d--
+                if (e && ty == "a") printf "%s\t[]\n", path()
+                if (e && ty == "o") printf "%s\t{}\n", path()
+                if (d > 0 && t[d] == "o") hk[d] = 0
+                l = substr(l, 2)
+            } else if (match(l, /^[-+.0-9A-Za-z]+/)) {
+                value(substr(l, 1, RLENGTH)); l = substr(l, RLENGTH + 1)
+            } else {
+                l = substr(l, 2)    # anything else: skip it, never loop
+            }
+        }
+    }'
+}
+
+# oyg_jget <path> — the value at <path> (oyg_jflat naming) in the JSON on
+# stdin; empty when absent.
+oyg_jget() {
+    oyg_jflat | awk -v p="$1" 'index($0, p "\t") == 1 { print substr($0, length(p) + 2); exit }'
+}
+
+# oyg_jlist <array> <field> [<field> ...] — for every element of <array>,
+# its fields on one line, space-separated, in the order given.
+oyg_jlist() {
+    oyg_jflat | awk -v a="$1" -v fs="$*" '
+        BEGIN { nf = split(fs, f, " ") }
+        index($0, a "[") == 1 {
+            rest = substr($0, length(a) + 2)
+            i = substr(rest, 1, index(rest, "]") - 1)
+            rest = substr(rest, length(i) + 3)
+            tab = index(rest, "\t")
+            key = substr(rest, 1, tab - 1)
+            if (!(i in seen)) { seen[i] = 1; order[++m] = i }
+            v[i, key] = substr(rest, tab + 1)
+        }
+        END {
+            for (j = 1; j <= m; j++) {
+                line = ""
+                for (x = 2; x <= nf; x++) {
+                    if (x > 2) line = line " "
+                    line = line v[order[j], f[x]]
+                }
+                print line
+            }
+        }'
 }
 
 # oyg_setting_get <category> <key> — the value from settingsservice;
@@ -101,7 +227,7 @@ elif r is not None:
 oyg_setting_get() {
     oyg_luna luna://com.webos.settingsservice/getSystemSettings \
         "{\"category\":\"$1\",\"keys\":[\"$2\"]}" \
-        | oyg_json "(lambda v: v if v is None or isinstance(v, str) else json.dumps(v))(d.get('settings', {}).get('$2'))"
+        | oyg_jget "settings.$2"
 }
 
 # oyg_setting_set <category> <key> <value> — true/false are sent as JSON
@@ -113,7 +239,12 @@ oyg_setting_set() {
     esac
     oyg_luna luna://com.webos.settingsservice/setSystemSettings \
         "{\"category\":\"$1\",\"settings\":{\"$2\":$v}}" \
-        | oyg_json "d.get('returnValue')" | grep -q True
+        | oyg_jok
+}
+
+# oyg_jok — true when the luna reply on stdin has "returnValue": true.
+oyg_jok() {
+    [ "$(oyg_jget returnValue)" = "true" ]
 }
 
 state_put() {

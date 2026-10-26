@@ -63,14 +63,19 @@ mod_capture_harden() {
             strategy="chattr-immutable"
             ok "capture: chattr +i applied to $CAPTURE_PATH"
         else
-            warn "capture: chattr +i not supported here, falling back to chmod+watcher"
+            ok "capture: no chattr +i on this filesystem — chmod plus the watcher instead"
         fi
     fi
 
     if [ "$strategy" != "chattr-immutable" ]; then
         if [ -e "$CAPTURE_PATH" ]; then
             current=$(stat -c '%a' "$CAPTURE_PATH" 2>/dev/null || stat -f '%Lp' "$CAPTURE_PATH" 2>/dev/null || echo unknown)
-            state_put "capture.file.mode.orig" "$current"
+            # Once, and never our own 000 (a second harden in the same boot
+            # would see it).
+            case "$current" in
+                0|00|000|0000|unknown) ;;
+                *) [ -n "$(state_get capture.file.mode.orig)" ] || state_put "capture.file.mode.orig" "$current" ;;
+            esac
             if chmod 000 "$CAPTURE_PATH" 2>/dev/null; then
                 ok "capture: chmod 000 applied to $CAPTURE_PATH (was $current)"
             elif chmod 0600 "$CAPTURE_PATH" 2>/dev/null; then
@@ -87,7 +92,6 @@ mod_capture_harden() {
 
     if [ -e "$VTCAP_BIN" ]; then
         cur=$(stat -c '%a' "$VTCAP_BIN" 2>/dev/null || stat -f '%Lp' "$VTCAP_BIN" 2>/dev/null || echo unknown)
-        state_put "capture.vtcap.mode.orig" "$cur"
 
         # Strategy ladder for read-only vendor binaries:
         #   1. mount --bind /dev/null <path>  (works on this device even
@@ -98,6 +102,10 @@ mod_capture_harden() {
         if [ "$OYG_DRY_RUN" != "1" ] && [ -r /proc/self/mountinfo ] \
             && grep -q " $VTCAP_BIN " /proc/self/mountinfo 2>/dev/null; then
             already_bound=1
+        fi
+        # Once, and not through a bind (that would be /dev/null's mode).
+        if [ "$already_bound" = "0" ] && [ -z "$(state_get capture.vtcap.mode.orig)" ]; then
+            state_put "capture.vtcap.mode.orig" "$cur"
         fi
 
         if [ "$already_bound" = "1" ]; then
@@ -134,9 +142,13 @@ mod_capture_restore() {
     require_root
     # Stop it first, or it re-tightens the file within 3 s of the restore.
     oyg_watcher_stop "$WATCH_SCRIPT_DST"
+    crc=0
     strategy=$(state_get "capture.strategy")
     orig=$(state_get "capture.file.mode.orig")
-    if [ -n "$orig" ] && [ -e "$CAPTURE_PATH" ]; then
+    # Versions before 0.8.12 could record the toolkit's own 000; the writer
+    # creates the file 0644 (seen after a stock boot, 2026-10-26).
+    case "$orig" in 0|00|000|0000) orig=644 ;; esac
+    if [ -n "$orig" ] && [ "$orig" != "unknown" ] && [ -e "$CAPTURE_PATH" ]; then
         run chmod "$orig" "$CAPTURE_PATH" 2>/dev/null && ok "capture: $CAPTURE_PATH mode restored to $orig"
     fi
     if [ "$strategy" = "chattr-immutable" ] && [ -e "$CAPTURE_PATH" ] && have chattr; then
@@ -147,11 +159,12 @@ mod_capture_restore() {
     case "$neutralised" in
         bind)
             bind_path=$(state_get "capture.vtcap.bind")
-            if [ -n "$bind_path" ]; then
+            if [ -n "$bind_path" ] && grep -q " $bind_path " /proc/self/mountinfo 2>/dev/null; then
                 if run umount "$bind_path" 2>/dev/null; then
                     ok "capture: vtCaptureTestSuite bind-mount umounted ($bind_path)"
                 else
                     warn "capture: could not umount $bind_path — manual cleanup required"
+                    crc=1
                 fi
             fi
             ;;
@@ -170,6 +183,7 @@ mod_capture_restore() {
     state_drop "capture.vtcap.bind"
     state_drop "capture.watcher"
     state_drop "capture.applied"
+    return $crc
 }
 
 mod_capture_status() {

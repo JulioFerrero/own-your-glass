@@ -17,14 +17,41 @@ ROLLBACK_SECS=660
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 
+# Also on stdout, so the control app's console shows each step when Apply
+# hardening runs this.
 logit() {
     if [ "$CHECK" = "1" ]; then
         printf '%s\n' "$*"
     else
-        printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"
+        printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG"
     fi
 }
 die() { logit "ABORT: $*"; exit 1; }
+
+# online — the default route is up and a public name resolves the way the
+# TV's apps resolve it (glibc, through /etc/resolv.conf).
+online() {
+    ip route show default 2>/dev/null | grep -q '^default' || return 1
+    if type getent >/dev/null 2>&1; then
+        getent hosts github.com >/dev/null 2>&1
+    else
+        nslookup github.com >/dev/null 2>&1
+    fi
+}
+
+# wait_online <t0> — log when the internet is back, counted from <t0>.
+wait_online() {
+    n=0
+    while [ $n -lt 90 ]; do
+        if online; then
+            logit "internet back online $(( $(date +%s) - $1 ))s after the ConnMan restart"
+            return 0
+        fi
+        sleep 1; n=$((n + 1))
+    done
+    logit "WARN: internet still offline $(( $(date +%s) - $1 ))s after the ConnMan restart"
+    return 1
+}
 
 launcher_mounted() {
     awk -v t="$LAUNCHER" '$5 == t { f = 1 } END { exit !f }' /proc/self/mountinfo
@@ -39,7 +66,8 @@ connmand_on_53() {
     return 1
 }
 
-[ "$CHECK" = "1" ] || { : > "$LOG"; rm -f "$R/go-c.done"; }
+# The previous run's log (or the rollback's, from Undo) stays as go-c.log.prev.
+[ "$CHECK" = "1" ] || { [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"; : > "$LOG"; rm -f "$R/go-c.done"; }
 logit "=== Variant C $([ "$CHECK" = "1" ] && echo check || echo starting) ==="
 
 # 0. read the network as it is now, while it works
@@ -90,9 +118,10 @@ if [ "$CHECK" = "1" ]; then
 fi
 logit "connmand pid before: $(pidof connmand)"
 
-# 2. rollback timer (fires unless go-c.done appears)
-pkill -f 'rollback-c.sh' 2>/dev/null
-( sleep $ROLLBACK_SECS; sh "$ROLLBACK" ) &
+# 2. rollback timer (fires unless go-c.done appears; a detached subshell
+# that `kill` from a later run cannot reliably reach, so the flag is what
+# cancels it)
+( sleep $ROLLBACK_SECS; [ -f "$R/go-c.done" ] || sh "$ROLLBACK" ) >/dev/null 2>&1 &
 echo $! > "$R/go-c-rollback.pid"
 logit "rollback armed: fires in ${ROLLBACK_SECS}s unless cancelled"
 
@@ -125,7 +154,8 @@ touch "$R/connman.sh.patched.mounted"
 
 # 5. restart connmand — THE risky step
 systemctl daemon-reload
-logit "restarting connmand..."
+logit "restarting connmand... (Wi-Fi drops for 7-30 s)"
+T0=$(date +%s)
 systemctl restart connman
 logit "systemctl restart connman returned rc=$?"
 
@@ -164,16 +194,16 @@ done
 logit "moving sink to 127.0.0.1:53"
 echo 127.0.0.1 > "$R/dns.bind"
 pkill -f watch-dns.sh 2>/dev/null
-pkill -f dnssink.py 2>/dev/null; sleep 1
+pkill -f 'dnssink\.' 2>/dev/null; sleep 1
 OYG_DNS_UPSTREAM=$UP OYG_DNS_BIND=127.0.0.1 sh "$HERE/dns.sh" start >> "$LOG" 2>&1
 logit "dns.sh start rc=$?"
 
 # 8. verify
 sleep 3
-blk=$(nslookup "$BLOCKED" 127.0.0.1 2>/dev/null | awk '/^Address/ && !/127.0.0.1/{print $2}' | tail -1)
-ok=$(nslookup github.com 127.0.0.1 2>/dev/null | awk '/^Address/ && !/127.0.0.1/{print $2}' | tail -1)
-dflt=$(nslookup "$BLOCKED" 2>/dev/null | awk '/^Address/ && !/127.0.0.1/{print $2}' | tail -1)
-ip=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}' | head -1)
+blk=$(nslookup "$BLOCKED" 127.0.0.1 2>/dev/null | awk '/^Address/ && !/127.0.0.1/{print $2}' | tail -n 1)
+ok=$(nslookup github.com 127.0.0.1 2>/dev/null | awk '/^Address/ && !/127.0.0.1/{print $2}' | tail -n 1)
+dflt=$(nslookup "$BLOCKED" 2>/dev/null | awk '/^Address/ && !/127.0.0.1/{print $2}' | tail -n 1)
+ip=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}' | head -n 1)
 logit "verify: via 127.0.0.1 blocked-name=$blk allowed-name=$ok | default-path=$dflt | $IFACE=$ip | connmand pid now $(pidof connmand)"
 case "$blk" in
     "::"|0.0.0.0) case "$ok" in
@@ -189,3 +219,4 @@ tp=$(cat "$R/go-c-rollback.pid" 2>/dev/null)
 [ -n "$tp" ] && kill "$tp" 2>/dev/null && rm -f "$R/go-c-rollback.pid"
 touch "$R/go-c.done"
 logit "=== SUCCESS: rollback cancelled. ConnMan proxy is OFF; sink owns 127.0.0.1:53 ==="
+wait_online "$T0"
