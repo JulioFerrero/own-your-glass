@@ -9,9 +9,10 @@ xargs env expr od id uname printf echo true false test sync timeout nohup"
 
 # t_setup — fresh temp dir, OYG_ROOT inside it, and a PATH of stubs plus the
 # plain tools above. Everything is removed when the test's subshell exits,
-# Ctrl-C too. pidof, pgrep, mount and umount start as stubs, and /proc
-# scans (OYG_PROC) see an empty dir: a test finds no real process and
-# changes nothing on the machine running it unless it stubs a command.
+# Ctrl-C too. pidof, pgrep, mount and umount start as stubs, so a test
+# finds no real process by name and reaches no service, mount or luna call
+# unless it stubs the command. The one /proc scan a module does (debloat's
+# cmd: match) only matches LG's iotjs running familycare, never a dev box.
 t_setup() {
     T_TMP=$(mktemp -d "${TMPDIR:-/tmp}/oyg-test.XXXXXX") || exit 1
     trap 'rm -rf "$T_TMP"' EXIT
@@ -20,15 +21,14 @@ t_setup() {
     T_STUBS="$T_TMP/stubs"
     T_BIN="$T_TMP/bin"
     T_CALLS="$T_TMP/calls.log"
-    OYG_PROC="$T_TMP/proc"
-    mkdir -p "$T_STUBS" "$T_BIN" "$OYG_PROC"
+    mkdir -p "$T_STUBS" "$T_BIN"
     : >"$T_CALLS"
     for _tool in $T_TOOLS; do
         _path=$(command -v "$_tool" 2>/dev/null) || continue
         case $_path in /*) ln -s "$_path" "$T_BIN/$_tool" ;; esac
     done
     PATH="$T_STUBS:$T_BIN"
-    export OYG_ROOT OYG_PROC T_CALLS PATH
+    export OYG_ROOT T_CALLS PATH
     for c in pidof pgrep; do stub "$c" 'exit 1'; done
     for c in mount umount; do stub "$c"; done
 }

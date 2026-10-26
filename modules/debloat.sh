@@ -254,10 +254,10 @@ _mod_debloat_pids_for() {
             spec=${proc#cmd:}
             exe=${spec%%:*}
             text=${spec#*:}
-            for d in "${OYG_PROC:-/proc}"/[0-9]*; do
-                [ "${d##*/}" = "$$" ] && continue
+            for d in /proc/[0-9]*; do
+                [ "${d#/proc/}" = "$$" ] && continue
                 _mod_debloat_argv_matches "$d/cmdline" "$exe" "$text" \
-                    && printf '%s\n' "${d##*/}"
+                    && printf '%s\n' "${d#/proc/}"
             done
             return 0 ;;
     esac

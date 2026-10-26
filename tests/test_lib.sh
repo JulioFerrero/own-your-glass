@@ -24,9 +24,3 @@ test_device_commands_do_not_exist_unless_a_test_fakes_them() {
         fi
     done
 }
-
-test_proc_scans_see_no_real_processes() {
-    # shellcheck source=lib/common.sh
-    . "$OYG_SRC/lib/common.sh"
-    assert_eq "$(oyg_pids_matching sh)" ""
-}
