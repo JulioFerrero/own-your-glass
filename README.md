@@ -406,7 +406,9 @@ The full list, with how each limit was verified, is in
 ## Tests
 
 `tests/run.sh` runs the test suite in any POSIX shell. Run it in an old BusyBox (the TV's shell
-family) and in dash:
+family) and in dash. The image is BusyBox 1.26 because the `busybox:1.24` image has an old
+manifest format Docker (containerd 2.1+) no longer pulls; 1.26.2 fails the same ways 1.24.1 does
+(`$((8#..))`, `ls --long-options`), and the scripts are also run on webOS 4's own 1.24.1.
 
 ```sh
 docker run --rm --platform linux/amd64 -e OYG_TEST_CONTAINER=1 \

@@ -1,10 +1,14 @@
 # tests/lib.sh — helpers sourced by tests/run.sh before each test.
 
-# t_setup — fresh temp dir, OYG_ROOT inside it, and an empty stub dir first
-# on PATH. Everything is removed when the test's subshell exits.
+# t_setup — fresh temp dir, OYG_ROOT inside it, and a stub dir first on
+# PATH. Everything is removed when the test's subshell exits, Ctrl-C too.
+# The stubs start with pidof, pgrep, mount and umount: a test sees no real
+# process and mounts nothing unless it stubs them itself, so a harden run
+# can never signal or bind over anything on the machine running the tests.
 t_setup() {
     T_TMP=$(mktemp -d "${TMPDIR:-/tmp}/oyg-test.XXXXXX") || exit 1
     trap 'rm -rf "$T_TMP"' EXIT
+    trap 'exit 130' HUP INT TERM
     OYG_ROOT="$T_TMP/oyg-root"
     T_STUBS="$T_TMP/stubs"
     T_CALLS="$T_TMP/calls.log"
@@ -12,6 +16,8 @@ t_setup() {
     : >"$T_CALLS"
     PATH="$T_STUBS:$PATH"
     export OYG_ROOT T_CALLS PATH
+    for c in pidof pgrep; do stub "$c" 'exit 1'; done
+    for c in mount umount; do stub "$c"; done
 }
 
 fail() {

@@ -456,7 +456,8 @@ mod_apps_restore() {
             ok "apps: removed $created (harden created it)"
         fi
     fi
-    state_drop "apps.dir_created"
+    # Kept while the folder is still there, so a later Undo tries again.
+    [ -n "$created" ] && [ -d "$created" ] || state_drop "apps.dir_created"
 
     state_drop "apps.path"
     state_drop "apps.region"

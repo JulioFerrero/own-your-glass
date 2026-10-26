@@ -65,3 +65,30 @@ test_apps_undo_removes_a_list_that_did_not_exist() {
     mod_apps_restore >"$T_TMP/out" 2>&1
     assert_eq "$(ls -A /var/preferences/com.webos.applicationManager)" ""
 }
+
+test_apps_undo_keeps_trying_to_remove_its_folder() {
+    in_container || skip "needs a throwaway container"
+    rm -rf /var/preferences/com.webos.applicationManager
+    mkdir -p /var/preferences/com.webos.applicationManager /usr/palm/applications/com.webos.app.adoverlay
+    stub id 'echo 0'
+    stub luna-send 'echo "{\"returnValue\":true}"'
+    load_module apps
+    mod_apps_harden >/dev/null 2>&1
+    d=/var/preferences/com.webos.applicationManager/blockedSystemAppList
+    : >"$d/lg-wrote-this.json"            # the folder is not empty at Undo
+    mod_apps_restore >/dev/null 2>&1
+    assert_contains "$(cat "$OYG_ROOT/state")" "apps.dir_created=$d"
+    rm -f "$d/lg-wrote-this.json"
+    mod_apps_restore >/dev/null 2>&1
+    [ ! -d "$d" ] || fail "the second Undo should remove the folder"
+}
+
+test_capture_dry_run_does_not_claim_it_applied_anything() {
+    in_container || skip "needs a throwaway container"
+    printf 'rgb' >/tmp/capture.rgb && chmod 644 /tmp/capture.rgb
+    stub chattr
+    load_module capture
+    out=$(OYG_DRY_RUN=1 mod_capture_harden 2>&1)
+    assert_not_contains "$out" "chattr +i applied"
+    assert_contains "$out" "would chattr +i"
+}
