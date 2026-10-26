@@ -27,11 +27,30 @@ Written in POSIX `sh` so it runs on the BusyBox shell that ships on the device.
 
 ---
 
+## Quick start
+
+Once the TV is rooted (Homebrew Channel installed, its SSH server on; see
+[Rooting your TV](#rooting-your-tv)), one line installs the app:
+
+```sh
+ssh root@<tv-ip> 'curl -fsSL https://raw.githubusercontent.com/JulioFerrero/own-your-glass/main/scripts/install-app.sh | sh'
+```
+
+The TV downloads the latest release itself, Homebrew Channel checks its sha256 and installs it,
+and the app opens. From there it is all the remote: press **Apply hardening**. Any SSH client
+works, a phone included, and the same line updates the app later. It is not in Homebrew
+Channel's own store yet.
+
+Prefer the command line? [Install (on the TV)](#install-on-the-tv) below covers `install.sh`,
+`oyg harden` and the full flag set.
+
+---
+
 ## Contents
 
+- [Quick start](#quick-start)
 - [What it actually does](#what-it-actually-does)
 - [Rooting your TV](#rooting-your-tv)
-- [Quick start](#quick-start)
 - [Control panel (the TV app)](#control-panel-the-tv-app)
 - [Threat model](#threat-model)
 - [Module table](#module-table)
@@ -95,18 +114,6 @@ The key lands at `/home/root/.ssh/authorized_keys` on the TV. Once that file exi
 
 ---
 
-## Quick start
-
-```sh
-scp -r . root@<tv-ip>:/tmp/oyg && ssh root@<tv-ip> 'sh /tmp/oyg/install.sh'
-ssh root@<tv-ip> '/var/lib/own-your-glass/oyg list'
-ssh root@<tv-ip> '/var/lib/own-your-glass/oyg harden --dry-run'   # then drop --dry-run
-```
-
-After install, no hardening is applied yet — pick your modules and re-run with `--dry-run` removed. See [Install (on the TV)](#install-on-the-tv) below for the full flag set, including the opt-in aggressive modes.
-
----
-
 ## Control panel (the TV app)
 
 `app/` is a webOS app that puts the toolkit on the remote. It carries its own copy of the
@@ -136,7 +143,7 @@ real TV.
 - Leaving the app closes it, so it does not sit in memory behind other apps. A job that is
   still running finishes first; it runs in the background either way.
 
-Build it on your computer and install it through Homebrew Channel:
+The [Quick start](#quick-start) line installs it. To build it yourself instead (developers):
 
 ```sh
 sh scripts/build-app.sh                            # writes dist/org.ownyourglass.control-<version>.ipk and prints its sha256

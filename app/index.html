@@ -256,7 +256,7 @@ function stateOf(s) {
 function esc(x) { return String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
 
 /* ---------- focus: one cursor, spatial, never colour alone ---------- */
-var nav = [], idx = 0;
+var nav = [], idx = 0, navStarted = false;
 
 function render() {
   var ok = 0, bad = 0;
@@ -281,9 +281,17 @@ function render() {
   showFocused();
 }
 
+/* The app opens on Apply hardening. Later rebuilds (the status rows arrive
+   after the buttons, and are redrawn every 20 s) keep whatever has focus,
+   found by element, since the rows come first and shift every index. */
 function buildNav() {
+  var was = nav[idx];
   nav = [].slice.call(document.querySelectorAll('[data-kind="sub"]'))
     .concat([].slice.call(document.querySelectorAll("button[data-act]")));
+  var i = was ? nav.indexOf(was) : -1;
+  if (!navStarted) i = nav.indexOf(document.querySelector('button[data-act="apply"]'));
+  navStarted = true;
+  if (i >= 0) idx = i;
   if (idx >= nav.length) idx = 0;
   paint();
 }
@@ -444,10 +452,30 @@ function paintProgress() {
   }
 }
 
+/* Before Apply hardening has installed the toolkit, /var/lib/own-your-glass
+   does not exist yet: read the status with the copy bundled in the app. */
+function statusCmd() {
+  var f = "/scripts/status-fast.sh", a = "/applications/" + APPID + "/toolkit";
+  return "for f in " + ROOT + f + " /media/developer/apps/usr/palm" + a + f +
+         " /usr/palm" + a + f + "; do [ -r \"$f\" ] && exec sh \"$f\" 2>&1; done; " +
+         "echo 'SYSTEM|FAIL|status script not found (reinstall the app)'";
+}
+/* A failed call's text can be pages long (the shell's stderr inside the
+   service's error): the status line gets the line that names the problem,
+   the console gets all of it. */
+function shortErr(e) {
+  var t = String(e), lines = t.split(/\\n|\n/), i;
+  for (i = 0; i < lines.length; i++)
+    if (/can't open|not found|No such|denied|refus|older than/i.test(lines[i])) return lines[i].slice(0, 160);
+  return t.slice(0, 160);
+}
 function loadStatus() {
-  var cmd = "sh " + ROOT + "/scripts/status-fast.sh 2>&1";
-  sh(cmd, function (e, r) {
-    if (e) { document.getElementById("verdict").textContent = e; return; }
+  sh(statusCmd(), function (e, r) {
+    if (e) {
+      document.getElementById("verdict").textContent = shortErr(e);
+      appendLines("status check failed: " + String(e), false);
+      return;
+    }
     parseFast(out(r)); render();
   });
 }
@@ -472,7 +500,7 @@ function cmdFor(act, dir) {
   var T = dir + "/toolkit";
   return {
     "apply":       "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + T + "/install.sh && OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 OYG_DNS_VARIANT_C=1 OYG_LAUNCHER=1 OYG_LAUNCHER_TRIM=1 sh " + ROOT + "/oyg harden",
-    "check":       "sh " + ROOT + "/scripts/status-fast.sh",
+    "check":       statusCmd(),
     "revert-all":  "OYG_NETWORK_BLOCK=1 OYG_NETWORK_STRICT=1 OYG_NETWORK_IPBLOCK=1 OYG_DNS_OVERRIDE=1 OYG_DNS_RESOLVER=1 sh " + ROOT + "/oyg restore",
     "dns-on":      "sh " + T + "/scripts/dns.sh start && if grep -q '^network.variant_c=1' " + ROOT + "/state; then sh " + T + "/scripts/go-c.sh </dev/null; fi",
     "dns-off":     "sh " + T + "/scripts/dns.sh stop",
