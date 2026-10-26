@@ -114,7 +114,11 @@ fi
 # ------------------------------------------------------------------ MICS ----
 grp MICS "Microphones"
 n=$(count_binds 'pcmC[01]D[0-9]*c')
-if [ "$n" -gt 0 ]; then
+caps=0
+for f in /dev/snd/pcmC*c; do [ -e "$f" ] && caps=$((caps + 1)); done
+if [ "$caps" -eq 0 ] && [ -d /dev/snd ]; then
+    printf "MICS|NA|no built-in microphone (the remote's mic: see Voice)\n"
+elif [ "$n" -gt 0 ]; then
     printf 'MICS|OK|%s capture endpoint(s) neutralised (/dev/null)\n' "$n"
 else
     printf 'MICS|FAIL|no capture endpoints are bound\n'

@@ -23,10 +23,13 @@ OYG_MOD_MIC=1
 #        contains "capture" — only nodes that appear in BOTH sources
 #        are kept (so we never accidentally target a playback node if
 #        the kernel naming is unusual)
-#     3) if neither yields anything, fall back to the known device
-#        capture list, so the module still works on dev machines
-#        that don't have /dev/snd (and so a fresh device with no
-#        /proc/asound/pcm is still covered).
+#     3) only when there is nothing to scan (no /dev/snd and no
+#        /proc/asound/pcm, e.g. a dev machine), fall back to the known
+#        webOS 10 capture list. A TV whose sound card has no capture
+#        device (webOS 4 43UM7300: the mic is in the remote) prints
+#        nothing.
+MIC_NONE="mic: no built-in microphone (no capture device; the remote's mic is the voice module's)"
+
 mod_mic_list_capture_nodes() {
     # Both sources are kept in variables, not files: status calls this too
     # and must not write.
@@ -69,9 +72,8 @@ mod_mic_list_capture_nodes() {
 
     # Cross-check: keep a node only if it appears in BOTH sources.
     # If one source is empty (e.g. dev box with no /dev/snd), use the
-    # other source alone. If both are empty, fall back to the hardcoded
-    # list — and tag the fallback so the caller knows the dynamic
-    # enumeration was unavailable.
+    # other source alone. If both are empty but there was something to
+    # scan, the TV has no built-in mic: print nothing.
     if [ -n "$_mic_devs" ] && [ -n "$_mic_proc" ]; then
         # Both: intersection, dynamic wins. Node paths have no spaces.
         for n in $_mic_devs; do
@@ -85,6 +87,8 @@ mod_mic_list_capture_nodes() {
         found_dynamic=1
     elif [ -n "$_mic_proc" ]; then
         printf '%s\n' "$_mic_proc"
+        found_dynamic=1
+    elif [ -d /dev/snd ] || [ -n "$_pcm_src" ]; then
         found_dynamic=1
     else
         # Fallback list, only used when nothing is enumerable on the box.
@@ -160,8 +164,7 @@ mod_mic_harden() {
 
     nodes=$(mod_mic_list_capture_nodes)
     if [ -z "$nodes" ]; then
-        warn "mic: no capture PCM nodes found (dynamic enumeration empty AND fallback empty)"
-        print_status N/A "mic: no capture PCM nodes present on this system"
+        print_status N/A "$MIC_NONE"
         return 0
     fi
 
@@ -364,17 +367,16 @@ mod_mic_check_one() {
 }
 
 mod_mic_status() {
+    nodes=$(mod_mic_list_capture_nodes)
+    if [ -z "$nodes" ]; then
+        print_status N/A "$MIC_NONE"
+        return
+    fi
     applied=$(state_get "mic.applied")
     [ "$applied" = "1" ] || {
         print_status N/A "mic: not hardened"
         return
     }
-
-    nodes=$(mod_mic_list_capture_nodes)
-    if [ -z "$nodes" ]; then
-        print_status N/A "mic: no capture PCM nodes present on this system"
-        return
-    fi
 
     any_fail=0
     any_ok=0
