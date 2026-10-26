@@ -106,14 +106,18 @@ _mod_apps_pick_file() {
         printf '%s\n' "$existing"
         return 0
     fi
-    region=${OYG_APPS_REGION:-$(oyg_luna luna://com.webos.settingsservice/getSystemSettings \
-        '{"category":"option","keys":["smartServiceCountryCode3"]}' \
-        | oyg_jget settings.smartServiceCountryCode3)}
-    # Only a country code goes into the file name (null, junk: ESP).
-    case $region in
-        [A-Z][A-Z][A-Z]) ;;
-        *) region=ESP ;;
-    esac
+    if [ -n "${OYG_APPS_REGION:-}" ]; then
+        region=$OYG_APPS_REGION     # set by hand: used as given
+    else
+        region=$(oyg_luna luna://com.webos.settingsservice/getSystemSettings \
+            '{"category":"option","keys":["smartServiceCountryCode3"]}' \
+            | oyg_jget settings.smartServiceCountryCode3)
+        # Only a country code from the TV names the file (null, junk: ESP).
+        case $region in
+            [A-Z][A-Z][A-Z]) ;;
+            *) region=ESP ;;
+        esac
+    fi
     printf '%s/%s.json\n' "$APPS_DIR" "$region"
 }
 

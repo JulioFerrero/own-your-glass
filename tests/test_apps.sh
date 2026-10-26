@@ -102,3 +102,13 @@ test_a_country_code_that_is_not_one_falls_back_to_esp() {
     mod_apps_harden >/dev/null 2>&1
     [ -f "$PREFS/blockedAppList/ESP.json" ] || fail "ESP.json expected: $(ls "$PREFS/blockedAppList" 2>&1)"
 }
+
+test_a_region_set_by_hand_is_used_as_given() {
+    _webos4
+    rm -rf "$PREFS/blockedAppList"
+    OYG_APPS_REGION=EU
+    export OYG_APPS_REGION
+    load_module apps
+    mod_apps_harden >/dev/null 2>&1
+    [ -f "$PREFS/blockedAppList/EU.json" ] || fail "EU.json expected: $(ls "$PREFS/blockedAppList" 2>&1)"
+}
