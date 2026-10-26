@@ -86,6 +86,7 @@ calls() {
 
 # load_module <name> — source lib/common.sh and one module, as oyg does.
 load_module() {
+    # shellcheck disable=SC2153 # OYG_SRC is set by tests/run.sh
     # shellcheck source=lib/common.sh
     . "$OYG_SRC/lib/common.sh"
     # shellcheck disable=SC2034 # read by the sourced code
