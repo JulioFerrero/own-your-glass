@@ -59,8 +59,13 @@ grp SYSTEM "System"
 # app runs its bundled copy of this script until Apply hardening installs it.
 [ -x "$OYG_ROOT/oyg" ] \
     || printf 'SYSTEM|NA|own-your-glass is not installed yet; Apply hardening installs it\n'
-oyg_supported 2>/dev/null \
-    || printf 'SYSTEM|WARN|%s: Apply hardening will refuse here (Undo still works)\n' "$OYG_UNSUPPORTED"
+if ! OYG_FORCE_UNSUPPORTED=0 oyg_supported 2>/dev/null; then
+    if [ -e "$OYG_ALLOW_UNSUPPORTED" ]; then
+        printf 'SYSTEM|WARN|testing mode: %s, and Apply hardening runs anyway\n' "$OYG_UNSUPPORTED"
+    else
+        printf 'SYSTEM|WARN|%s: Apply hardening will refuse here (Undo still works)\n' "$OYG_UNSUPPORTED"
+    fi
+fi
 printf 'SYSTEM|OK|load %s\n' "$(cut -d' ' -f1-3 /proc/loadavg | tr ' ' ',')"
 mnt=$(wc -l </proc/mounts 2>/dev/null)
 printf 'SYSTEM|OK|%s mounts (binds propagate into the 7 app jails)\n' "${mnt:-?}"

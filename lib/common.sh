@@ -78,11 +78,16 @@ require_root() {
 
 # oyg_supported — true on firmware the toolkit has been run on: webOS 10
 # (webOS 25). Otherwise false, with the reason in OYG_UNSUPPORTED.
-# OYG_FORCE_UNSUPPORTED=1 accepts an older webOS. node is required (the DNS
+# OYG_FORCE_UNSUPPORTED=1 accepts an older webOS, and so does the file
+# OYG_ALLOW_UNSUPPORTED (testing mode, left by
+# 'install-app.sh' run with OYG_FORCE_UNSUPPORTED=1), so that the app's
+# Apply hardening and the boot hook take it too; OYG_FORCE_UNSUPPORTED=0
+# overrides the file. node is required (the DNS
 # sink); every webOS TV ships it. On webOS 4 (BusyBox 1.24, no python3) an
 # older version half-ran and left a TV that could neither restore nor
 # factory reset (F52).
 OYG_MIN_WEBOS=10
+OYG_ALLOW_UNSUPPORTED="$OYG_ROOT/allow-unsupported"
 oyg_supported() {
     OYG_UNSUPPORTED=""
     _s_rel=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
@@ -98,8 +103,10 @@ oyg_supported() {
             [ "${_s_rel%%.*}" -ge "$OYG_MIN_WEBOS" ] && return 0
             OYG_UNSUPPORTED="webOS $_s_rel is older than webOS $OYG_MIN_WEBOS, the only version this toolkit has been run on" ;;
     esac
-    [ "${OYG_FORCE_UNSUPPORTED:-0}" = "1" ] || return 1
-    warn "$OYG_UNSUPPORTED — continuing (OYG_FORCE_UNSUPPORTED=1)"
+    _s_force=${OYG_FORCE_UNSUPPORTED:-}
+    [ -z "$_s_force" ] && [ -e "$OYG_ALLOW_UNSUPPORTED" ] && _s_force=1
+    [ "$_s_force" = "1" ] || return 1
+    warn "$OYG_UNSUPPORTED — continuing in testing mode (untested firmware)"
     return 0
 }
 
