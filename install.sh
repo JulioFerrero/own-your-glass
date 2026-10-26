@@ -285,16 +285,18 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # Enforce previously-stopped services. systemctl mask is impossible
     # on this device (read-only /etc), so the model is "stop now + stop
     # on every boot". The harden run above re-populates the list, so we
-    # read it here and re-stop each entry. Tolerant of services that are
-    # already inactive (systemctl stop exits 0 in that case) and of a
-    # missing file (nothing to enforce).
+    # read it here and re-stop each entry, through systemd (webOS 10) or
+    # upstart (webOS 4) via oyg_unit_stop. Tolerant of services that are
+    # already inactive and of a missing file (nothing to enforce).
+    OYG_ROOT=$OYG_DST
+    . $OYG_DST/lib/common.sh
     if [ -r "\$STOPPED_LIST" ]; then
         while IFS= read -r svc; do
             [ -z "\$svc" ] && continue
             case "\$svc" in
                 \#*) continue ;;
             esac
-            if systemctl stop "\$svc" 2>/dev/null; then
+            if oyg_unit_stop "\$svc" 2>/dev/null; then
                 echo "[boot-hook] stopped: \$svc"
             else
                 echo "[boot-hook] WARN: could not stop \$svc (already inactive?)"
@@ -355,7 +357,7 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
             case "\$svc" in
                 \#*) continue ;;
             esac
-            if systemctl stop "\$svc" 2>/dev/null; then
+            if oyg_unit_stop "\$svc" 2>/dev/null; then
                 echo "[boot-hook] debloat stop: \$svc"
             else
                 echo "[boot-hook] WARN: debloat stop \$svc failed (already inactive?)"

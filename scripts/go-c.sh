@@ -70,6 +70,11 @@ connmand_on_53() {
 [ "$CHECK" = "1" ] || { [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"; : > "$LOG"; rm -f "$R/go-c.done"; }
 logit "=== Variant C $([ "$CHECK" = "1" ] && echo check || echo starting) ==="
 
+# It restarts connmand through systemd. webOS 4 runs upstart, where this
+# would stop the network with no way back; the DNS sink works without C.
+type systemctl >/dev/null 2>&1 \
+    || die "Variant C needs systemd (webOS 10); this TV has none — DNS blocking still works without it"
+
 # 0. read the network as it is now, while it works
 IFACE=$(ip route show default 2>/dev/null | awk '/^default/ { for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
 GW=$(ip route show default 2>/dev/null | awk '/^default/ { for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit } }')
