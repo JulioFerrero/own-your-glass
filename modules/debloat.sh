@@ -183,26 +183,21 @@ _mod_debloat_split_spec() {
 }
 
 # _mod_debloat_unit_present <unit>
-#   Print "1" if the unit is known to this systemd, "0" otherwise.
-#   In dry-run, simulate "present" so the operator sees the full plan.
+#   Print "1" if this TV has the unit (systemd) or its job (upstart), "0"
+#   otherwise. In dry-run, simulate "present" so the operator sees the
+#   full plan.
 _mod_debloat_unit_present() {
     unit=$1
-    if [ "$OYG_DRY_RUN" = "1" ]; then
+    if [ "$OYG_DRY_RUN" = "1" ] || oyg_unit_present "$unit"; then
         printf '1\n'
-        return 0
+    else
+        printf '0\n'
     fi
-    if systemctl list-unit-files 2>/dev/null \
-        | awk '{print $1}' | grep -Fxq -- "$unit"; then
-        printf '1\n'
-        return 0
-    fi
-    printf '0\n'
-    return 0
 }
 
 # _mod_debloat_query <unit> <what>
-#   Print one cleaned line for `is-active` or `is-enabled`. Falls back
-#   to "unknown" on systemctl failure. In dry-run, simulate inactive
+#   Print one cleaned line for `is-active` or `is-enabled`, "unknown"
+#   when there is no answer. In dry-run, simulate inactive
 #   + disabled (the operator wants to see the planned actions, not a
 #   fake "already active" that would skip the stop).
 _mod_debloat_query() {
@@ -216,12 +211,7 @@ _mod_debloat_query() {
         esac
         return 0
     fi
-    out=$(systemctl "$what" "$unit" 2>/dev/null | tr -d '[:space:]')
-    if [ -z "$out" ]; then
-        printf 'unknown\n'
-    else
-        printf '%s\n' "$out"
-    fi
+    oyg_unit_query "$unit" "$what"
 }
 
 # _mod_debloat_argv_matches <cmdline-file> <exe> <text>
@@ -273,15 +263,12 @@ _mod_debloat_pids_for() {
 }
 
 # _mod_debloat_stop_unit <unit>
-#   systemctl stop <unit>. In dry-run, echo the planned command.
+#   Stop <unit> (systemd) or its job (upstart). In dry-run, echo the
+#   planned command.
 _mod_debloat_stop_unit() {
     unit=$1
     [ -z "$unit" ] && return 0
-    if [ "$OYG_DRY_RUN" = "1" ]; then
-        printf 'DRY-RUN: systemctl stop %s\n' "$unit"
-        return 0
-    fi
-    systemctl stop "$unit" 2>/dev/null
+    oyg_unit_stop "$unit" 2>/dev/null
 }
 
 # _mod_debloat_kill_process <process>
@@ -653,10 +640,16 @@ mod_debloat_harden() {
     require_root
     ensure_dirs
 
-    have systemctl || [ "$OYG_DRY_RUN" = "1" ] \
-        || { err "debloat: systemctl not found"; return 1; }
-    if ! have systemctl && [ "$OYG_DRY_RUN" = "1" ]; then
-        warn "debloat: systemctl not found — dry-run will simulate unit states (inactive)"
+    # Without systemd or upstart only the services pass is skipped: the
+    # binaries and background apps don't need either.
+    unit_specs=$(_mod_debloat_load_units_spec)
+    if [ "$(oyg_init)" = none ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            warn "debloat: neither systemctl nor initctl found — dry-run will simulate unit states (inactive)"
+        else
+            warn "debloat: neither systemctl nor initctl found — services skipped"
+            unit_specs=
+        fi
     fi
 
     # The boot hook's late pass, for apps LG loads after the hook is done.
@@ -672,8 +665,8 @@ mod_debloat_harden() {
 
     rc=0
 
-    # --- pass 1: systemd units ---
-    for spec in $(_mod_debloat_load_units_spec); do
+    # --- pass 1: services (systemd units or upstart jobs) ---
+    for spec in $unit_specs; do
         id=$(printf '%s' "$spec"   | awk -F'|' '{print $1}')
         unit=$(printf '%s' "$spec" | awk -F'|' '{print $2}')
         proc=$(printf '%s' "$spec" | awk -F'|' '{print $3}')
@@ -739,6 +732,8 @@ mod_debloat_harden() {
                     IFS=$saved_ifs
                 fi
                 remaining=$(_mod_debloat_pids_for "$proc")
+                # A dry run signalled nothing, so the process is still there.
+                [ "$OYG_DRY_RUN" = "1" ] && remaining=
                 if [ -n "$remaining" ]; then
                     err "debloat: $id process <$proc> still running after TERM+KILL (pids: $(_mod_debloat_join_pids "$remaining"))"
                     rc=1
@@ -751,7 +746,7 @@ mod_debloat_harden() {
                 proc_note="process was not running"
             fi
         else
-            proc_note="process column empty (relies on systemctl stop; see brief)"
+            proc_note="process column empty (relies on the service stop)"
         fi
 
         _mod_debloat_record_unit "$unit" \
@@ -865,7 +860,7 @@ mod_debloat_restore() {
         if [ -n "$start_reason" ]; then
             if _mod_debloat_stop_unit "$unit" 2>/dev/null || true; then
                 if [ "$(_mod_debloat_unit_present "$unit")" = "1" ]; then
-                    if run systemctl start "$unit" 2>/dev/null; then
+                    if oyg_unit_start "$unit" 2>/dev/null; then
                         ok "debloat: $id unit <$unit> started (restored: $start_reason)"
                     else
                         warn "debloat: start $unit failed (will leave stopped)"

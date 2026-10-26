@@ -38,10 +38,10 @@ LG_HARDCODED_IPS="156.147.69.32 165.244.62.249 165.244.99.174"
 # table. Sinkhole, loopback and private answers are dropped.
 _mod_network_resolve() {
     have nslookup || return 0
-    nslookup "$1" 2>/dev/null | awk '
-        /^Address: / && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ \
-            && $2 !~ /^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {
-            print $2; exit
+    nslookup "$1" 2>/dev/null | oyg_dns_answers | awk '
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ \
+            && !/^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {
+            print; exit
         }'
 }
 
@@ -162,21 +162,26 @@ mod_network_layer1_harden() {
         warn "network: STRICT section enabled — ThinQ / voice / AI / LG cloud blocked (BREAKS FEATURES)"
     }
 
-    {
+    # $HOSTS_GEN is what /etc/hosts shows while bound, so a dry run only
+    # counts the entries it would write.
+    hosts=$(
         printf '127.0.0.1 localhost\n'
         _mod_network_collect_domains "$section" \
             | awk '{ printf "0.0.0.0 %s\n::1 %s\n", $1, $1 }'
-    } >"$HOSTS_GEN" 2>/dev/null
-    cp "$HOSTS_GEN" "$HOSTS_GEN_INSPECT" 2>/dev/null || true
-    v4_count=$(grep -c '^0\.0\.0\.0 ' "$HOSTS_GEN" 2>/dev/null | tr -d ' ')
-    v6_count=$(grep -c '^::1 ' "$HOSTS_GEN" 2>/dev/null | tr -d ' ')
+    )
+    v4_count=$(printf '%s\n' "$hosts" | grep -c '^0\.0\.0\.0 ')
+    v6_count=$(printf '%s\n' "$hosts" | grep -c '^::1 ')
     count=$((v4_count + v6_count))
-    ok "network: layer1 — generated $count hosts entries at $HOSTS_GEN (v4=$v4_count v6=$v6_count)"
 
     if [ "$OYG_DRY_RUN" = "1" ]; then
+        ok "network: layer1 — would generate $count hosts entries at $HOSTS_GEN (v4=$v4_count v6=$v6_count)"
         printf 'DRY-RUN: mount --bind %s %s\n' "$HOSTS_GEN" "$HOSTS_TARGET"
         return 0
     fi
+
+    printf '%s\n' "$hosts" >"$HOSTS_GEN" 2>/dev/null
+    cp "$HOSTS_GEN" "$HOSTS_GEN_INSPECT" 2>/dev/null || true
+    ok "network: layer1 — generated $count hosts entries at $HOSTS_GEN (v4=$v4_count v6=$v6_count)"
 
     # /etc/hosts is 0644 on a stock TV; the toolkit's umask (077) would make
     # the bound copy root-only.
@@ -223,7 +228,9 @@ mod_network_layer1_restore() {
     else
         ok "network: layer1 — /etc/hosts was not bind-mounted by own-your-glass"
     fi
-    if [ -f "$HOSTS_GEN" ]; then
+    if [ -f "$HOSTS_GEN" ] && [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: rm %s\n' "$HOSTS_GEN"
+    elif [ -f "$HOSTS_GEN" ]; then
         rm -f "$HOSTS_GEN" 2>/dev/null \
             && ok "network: layer1 — removed generated $HOSTS_GEN" \
             || warn "network: layer1 — could not remove $HOSTS_GEN"
@@ -538,6 +545,10 @@ _mod_network_variant_c_on() {
 # the blocklist too. scripts/go-c.sh does it, with its rollback timer.
 _mod_network_variant_c_harden() {
     [ "${OYG_DNS_VARIANT_C:-0}" = "1" ] || return 0
+    if [ "$(oyg_init)" != systemd ]; then
+        ok "network: Variant C skipped — it needs systemd (webOS 10); the DNS sink works without it"
+        return 0
+    fi
     if [ "$OYG_DRY_RUN" = "1" ]; then
         printf 'DRY-RUN: sh %s/go-c.sh (Variant C)\n' "$(dirname "$1")"
         return 0
@@ -743,8 +754,8 @@ mod_network_status() {
             print_status N/A "network: layer4 — not enabled (set OYG_DNS_RESOLVER=1)"
         fi
     else
-        if nslookup -timeout=1 -port=53 example.com "$DNS_BIND" >/dev/null 2>&1 \
-            || nslookup -timeout=1 example.com "$DNS_BIND" >/dev/null 2>&1; then
+        dns_bin=$(_dns_bin) || dns_bin=
+        if oyg_sink_probe "${dns_bin%/*}/dnssink.js" "$DNS_BIND" "$DNS_PORT"; then
             print_status OK "network: layer4 — resolver answering on $DNS_BIND:$DNS_PORT"
         else
             print_status FAIL "network: layer4 — resolver NOT answering on $DNS_BIND:$DNS_PORT"

@@ -23,21 +23,21 @@ OYG_MOD_MIC=1
 #        contains "capture" — only nodes that appear in BOTH sources
 #        are kept (so we never accidentally target a playback node if
 #        the kernel naming is unusual)
-#     3) if neither yields anything, fall back to the known device
-#        capture list, so the module still works on dev machines
-#        that don't have /dev/snd (and so a fresh device with no
-#        /proc/asound/pcm is still covered).
+#     3) only when there is nothing to scan (no /dev/snd and no
+#        /proc/asound/pcm, e.g. a dev machine), fall back to the known
+#        webOS 10 capture list. A TV whose sound card has no capture
+#        device (webOS 4 43UM7300: the mic is in the remote) prints
+#        nothing.
+MIC_NONE="mic: no built-in microphone (no capture device; the remote's mic is the voice module's)"
+
 mod_mic_list_capture_nodes() {
-    _mic_tmp=${OYG_TMPDIR:-/tmp}
+    # Both sources are kept in variables, not files: status calls this too
+    # and must not write.
     found_dynamic=0
     # Source 1: device nodes in /dev/snd ending in 'c'
+    _mic_devs=
     if [ -d /dev/snd ]; then
-        for n in /dev/snd/pcmC*c; do
-            [ -e "$n" ] || continue
-            case "$n" in
-                *c) printf '%s\n' "$n" ;;
-            esac
-        done >"$_mic_tmp/mic.devs" 2>/dev/null
+        _mic_devs=$(for n in /dev/snd/pcmC*c; do [ -e "$n" ] && printf '%s\n' "$n"; done)
     fi
 
     # Source 2: /proc/asound/pcm — lines look like:
@@ -54,8 +54,9 @@ mod_mic_list_capture_nodes() {
     else
         _pcm_src=
     fi
+    _mic_proc=
     if [ -n "$_pcm_src" ]; then
-        awk -F': ' '
+        _mic_proc=$(awk -F': ' '
             /^ *[0-9]+-[0-9]+:/ {
                 split($1, hd, "-");
                 card = hd[1] + 0; dev  = hd[2] + 0;
@@ -66,32 +67,28 @@ mod_mic_list_capture_nodes() {
                 rest = $0; sub(/^[^:]*:[^:]*: /, "", rest);
                 if (rest ~ /capture/) printf "/dev/snd/pcmC%dD%dc\n", card, dev;
             }
-        ' "$_pcm_src" >"$_mic_tmp/mic.proc" 2>/dev/null
+        ' "$_pcm_src" 2>/dev/null)
     fi
 
     # Cross-check: keep a node only if it appears in BOTH sources.
     # If one source is empty (e.g. dev box with no /dev/snd), use the
-    # other source alone. If both are empty, fall back to the hardcoded
-    # list — and tag the fallback so the caller knows the dynamic
-    # enumeration was unavailable.
-    have_dev=0; have_proc=0
-    [ -s "$_mic_tmp/mic.devs" ]  && have_dev=1
-    [ -s "$_mic_tmp/mic.proc" ] && have_proc=1
-
-    if [ "$have_dev" = "1" ] && [ "$have_proc" = "1" ]; then
-        # Both: intersection, dynamic wins.
-        while IFS= read -r n; do
-            [ -z "$n" ] && continue
-            if grep -Fxq "$n" "$_mic_tmp/mic.proc"; then
+    # other source alone. If both are empty but there was something to
+    # scan, the TV has no built-in mic: print nothing.
+    if [ -n "$_mic_devs" ] && [ -n "$_mic_proc" ]; then
+        # Both: intersection, dynamic wins. Node paths have no spaces.
+        for n in $_mic_devs; do
+            if printf '%s\n' "$_mic_proc" | grep -Fxq -- "$n"; then
                 printf '%s\n' "$n"
                 found_dynamic=1
             fi
-        done <"$_mic_tmp/mic.devs"
-    elif [ "$have_dev" = "1" ]; then
-        cat "$_mic_tmp/mic.devs"
+        done
+    elif [ -n "$_mic_devs" ]; then
+        printf '%s\n' "$_mic_devs"
         found_dynamic=1
-    elif [ "$have_proc" = "1" ]; then
-        cat "$_mic_tmp/mic.proc"
+    elif [ -n "$_mic_proc" ]; then
+        printf '%s\n' "$_mic_proc"
+        found_dynamic=1
+    elif [ -d /dev/snd ] || [ -n "$_pcm_src" ]; then
         found_dynamic=1
     else
         # Fallback list, only used when nothing is enumerable on the box.
@@ -104,10 +101,7 @@ mod_mic_list_capture_nodes() {
 EOF
     fi
 
-    if [ "$found_dynamic" = "1" ]; then
-        return 0
-    fi
-    return 1
+    [ "$found_dynamic" = "1" ]
 }
 
 # mod_mic_node_to_alsa <node-path>
@@ -168,13 +162,9 @@ mod_mic_harden() {
     require_root
     ensure_dirs
 
-    OYG_TMPDIR=${OYG_TMPDIR:-/tmp}
-    rm -f "$OYG_TMPDIR/mic.devs" "$OYG_TMPDIR/mic.proc" 2>/dev/null || true
-
     nodes=$(mod_mic_list_capture_nodes)
     if [ -z "$nodes" ]; then
-        warn "mic: no capture PCM nodes found (dynamic enumeration empty AND fallback empty)"
-        print_status N/A "mic: no capture PCM nodes present on this system"
+        print_status N/A "$MIC_NONE"
         return 0
     fi
 
@@ -256,9 +246,6 @@ mod_mic_harden() {
     if [ "$bound_count" -gt 0 ]; then
         state_put "mic.applied" "1"
     fi
-
-    # Cleanup tmp
-    rm -f "$OYG_TMPDIR/mic.devs" "$OYG_TMPDIR/mic.proc" 2>/dev/null || true
 
     return $rc
 }
@@ -380,17 +367,16 @@ mod_mic_check_one() {
 }
 
 mod_mic_status() {
+    nodes=$(mod_mic_list_capture_nodes)
+    if [ -z "$nodes" ]; then
+        print_status N/A "$MIC_NONE"
+        return
+    fi
     applied=$(state_get "mic.applied")
     [ "$applied" = "1" ] || {
         print_status N/A "mic: not hardened"
         return
     }
-
-    nodes=$(mod_mic_list_capture_nodes)
-    if [ -z "$nodes" ]; then
-        print_status N/A "mic: no capture PCM nodes present on this system"
-        return
-    fi
 
     any_fail=0
     any_ok=0

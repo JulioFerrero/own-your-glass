@@ -253,7 +253,7 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # is deliberately untouched because the mic button rides the same
     # HID channel as every other remote button), logs, remoteone,
     # apps (re-merges the curated blocklist — the application manager
-    # may rewrite blockedSystemAppList/<REGION>.json on its own, so we
+    # may rewrite its <REGION>.json list on its own, so we
     # have to re-add our entries on every boot), and policy
     # (re-declines LG consents because the system silently re-accepts
     # them when related components update; re-touches the webOSbrew
@@ -285,22 +285,41 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     # Enforce previously-stopped services. systemctl mask is impossible
     # on this device (read-only /etc), so the model is "stop now + stop
     # on every boot". The harden run above re-populates the list, so we
-    # read it here and re-stop each entry. Tolerant of services that are
-    # already inactive (systemctl stop exits 0 in that case) and of a
-    # missing file (nothing to enforce).
-    if [ -r "\$STOPPED_LIST" ]; then
-        while IFS= read -r svc; do
-            [ -z "\$svc" ] && continue
-            case "\$svc" in
-                \#*) continue ;;
-            esac
-            if systemctl stop "\$svc" 2>/dev/null; then
-                echo "[boot-hook] stopped: \$svc"
-            else
-                echo "[boot-hook] WARN: could not stop \$svc (already inactive?)"
-            fi
-        done <"\$STOPPED_LIST"
+    # read it here and re-stop each entry, through systemd (webOS 10) or
+    # upstart (webOS 4) via oyg_unit_stop. Tolerant of services that are
+    # already inactive and of a missing file (nothing to enforce).
+    # Without lib/common.sh (a broken install) the rest of the hook still
+    # runs, with systemctl as before.
+    OYG_ROOT=$OYG_DST
+    if [ -r $OYG_DST/lib/common.sh ]; then
+        . $OYG_DST/lib/common.sh
+    else
+        oyg_unit_stop() { systemctl stop "\$1"; }
+        oyg_unit_query() { echo unknown; }
+        oyg_unit_present() { return 0; }
     fi
+    # restop <list> <label> — stop each unit in <list>. Upstart starts some
+    # jobs on late events (rest-boot-done), so "was not running" is told
+    # apart from "stopped" and a late pass below stops them again.
+    restop() {
+        [ -r "\$1" ] || return 0
+        while IFS= read -r svc; do
+            case "\$svc" in
+                ''|\#*) continue ;;
+            esac
+            # The list names every target; skip the ones this TV lacks.
+            oyg_unit_present "\$svc" || continue
+            was=\$(oyg_unit_query "\$svc" is-active)
+            if ! oyg_unit_stop "\$svc" 2>/dev/null; then
+                echo "[boot-hook] WARN: \$2: could not stop \$svc"
+            elif [ "\$was" = inactive ]; then
+                echo "[boot-hook] \$2: \$svc was not running"
+            else
+                echo "[boot-hook] \$2: stopped \$svc"
+            fi
+        done <"\$1"
+    }
+    restop "\$STOPPED_LIST" services
 
     # Kill previously-recorded process names. REQUIRED for luna-launched
     # services (e.g. iot-client) whose systemd unit is only a one-shot
@@ -349,19 +368,12 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
         ( sleep 120; echo "[boot-hook] debloat: late pass for background apps"
           OYG_DEBLOAT_APPS_ONLY=1 $OYG_DST/oyg harden --only debloat ) </dev/null >>\$BOOT_LOG 2>&1 &
     fi
-    if [ -r "\$DEBLOAT_STOPPED_LIST" ]; then
-        while IFS= read -r svc; do
-            [ -z "\$svc" ] && continue
-            case "\$svc" in
-                \#*) continue ;;
-            esac
-            if systemctl stop "\$svc" 2>/dev/null; then
-                echo "[boot-hook] debloat stop: \$svc"
-            else
-                echo "[boot-hook] WARN: debloat stop \$svc failed (already inactive?)"
-            fi
-        done <"\$DEBLOAT_STOPPED_LIST"
-    fi
+    restop "\$DEBLOAT_STOPPED_LIST" debloat
+    # Once boot has settled. Undo deletes both lists, so after an Undo this
+    # stops nothing.
+    ( sleep \${OYG_HOOK_LATE_SECS:-120}
+      restop "\$STOPPED_LIST" "services, late"
+      restop "\$DEBLOAT_STOPPED_LIST" "debloat, late" ) </dev/null >>\$BOOT_LOG 2>&1 &
     if [ -r "\$DEBLOAT_KILL_LIST" ]; then
         while IFS= read -r proc; do
             [ -z "\$proc" ] && continue

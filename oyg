@@ -11,7 +11,7 @@
 # Environment:
 #   OYG_AGGRESSIVE=1          enable risky modules (services-extra, perms,
 #                             remoteone chmod)
-#   OYG_FORCE_UNSUPPORTED=1   harden on a webOS older than 10 (untested)
+#   OYG_FORCE_UNSUPPORTED=1   harden on a webOS other than 3, 4 and 10+ (untested)
 #   OYG_NETWORK_BLOCK=1       opt in to the network module (four layers)
 #   OYG_NETWORK_STRICT=1      include STRICT section (ThinQ/voice/AI/LG)
 #   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
@@ -42,8 +42,8 @@ Usage:
 Environment flags (read by individual modules):
   OYG_AGGRESSIVE=1           enable risky modules (services-extra, perms,
                              remoteone chmod)
-  OYG_FORCE_UNSUPPORTED=1    harden on a webOS older than 10, which this
-                             toolkit has never been run on
+  OYG_FORCE_UNSUPPORTED=1    harden on a webOS other than 3, 4 and 10+,
+                             which this toolkit has never been run on
   OYG_NETWORK_BLOCK=1        opt in to the network module (four layers)
   OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
   OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
@@ -110,7 +110,7 @@ list_modules() {
             remoteone)
                 printf 'remoteone   verify /mnt/lg/cmn_data/remoteDebug/ absent; optionally tighten cmn_data (aggressive)\n' ;;
             apps)
-                printf 'apps        hide a curated list of unwanted apps from the launcher via LG blockedSystemAppList/<REGION>.json (ad machinery, remote-support, SDK examples, demo apps); preserves existing entries; skips IDs absent on device\n' ;;
+                printf 'apps        hide a curated list of unwanted apps from the launcher via LG blockedSystemAppList/<REGION>.json (webOS 4: blockedAppList/<REGION>.json) (ad machinery, remote-support, SDK examples, demo apps); preserves existing entries; skips IDs absent on device\n' ;;
             policy)
                 printf 'policy      touch /var/luna/preferences/webosbrew_block_updates (webOSbrew fallback hosts-bind) and webosbrew_telnet_disabled (suppresses telnetd — unauthenticated root on the LAN); force-decline LG consents in /var/luna/preferences/eula (Job B, decline-all default; OYG_TOS_IDS="S_VNG S_TAG" allow-list supported) and the three SDX/ACR-side stores at /mnt/lg/{cmn_data,cache,user}/sdp/eula-service/eula.json (Job C, A→D for every managementTypeCode); move marketingAllowedDate.json aside (Job D — kills the 2-year "re-allow marketing" toast); HbbTV and SSAP off, port 3001 localhost-only (Job E); LG ad cookie emptied (Job F); re-applied every boot\n' ;;
             voice)
@@ -143,13 +143,10 @@ cmd_list() {
     list_modules
 }
 
+# cmd_status [dry] — read-only: it never creates $OYG_ROOT or any file.
 cmd_status() {
-    OYG_DRY_RUN=0
-    [ "${1:-}" = "--dry-run" ] && OYG_DRY_RUN=1
+    OYG_DRY_RUN=${1:-0}
     export OYG_DRY_RUN
-    if [ -w "${OYG_ROOT%/*}" ] 2>/dev/null; then
-        ensure_dirs 2>/dev/null || true
-    fi
     printf '%s\n' "== own-your-glass status =="
     for m in $(all_modules); do
         load_module "$m" || continue
@@ -257,7 +254,7 @@ main() {
 
     case "$sub" in
         list)     cmd_list ;;
-        status)   cmd_status "$@" ;;
+        status)   cmd_status "$dry" ;;
         harden)   run_modules harden "$only" "$dry" ;;
         restore)  run_modules restore "$only" "$dry" || exit 1 ;;
         verify)   cmd_verify ;;

@@ -6,8 +6,8 @@
 #
 #   ssh root@<tv-ip> 'curl -fsSL https://raw.githubusercontent.com/JulioFerrero/own-your-glass/main/scripts/install-app.sh | sh'
 #
-# On a webOS older than 10, which the toolkit has never been run on, Apply
-# hardening refuses. '| OYG_FORCE_UNSUPPORTED=1 sh' turns testing mode on
+# On a webOS other than 3, 4 and 10+, which the toolkit has never been run
+# on (webOS 5-9), Apply hardening refuses. '| OYG_FORCE_UNSUPPORTED=1 sh' turns testing mode on
 # (Apply then runs anyway), '| OYG_FORCE_UNSUPPORTED=0 sh' turns it off.
 # OYG_MANIFEST_URL=<url> installs from another manifest (a test build).
 
@@ -23,7 +23,7 @@ type luna-send >/dev/null 2>&1 || die "luna-send not found: this is not a webOS 
 # Testing mode: the file the toolkit's firmware check accepts (lib/common.sh).
 ROOT=/var/lib/own-your-glass
 rel=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /var/run/nyx/os_info.json 2>/dev/null | head -n 1)
-case "${rel%%.*}" in [0-9]|'') old=1 ;; *) old=0 ;; esac
+case "${rel%%.*}" in [34]) old=0 ;; [0-9]|'') old=1 ;; *) old=0 ;; esac
 case "${OYG_FORCE_UNSUPPORTED:-}" in
     1) if [ "$old" = 1 ]; then
            mkdir -p "$ROOT" && : >"$ROOT/allow-unsupported" \
@@ -34,7 +34,7 @@ case "${OYG_FORCE_UNSUPPORTED:-}" in
     0) rm -f "$ROOT/allow-unsupported" && say "testing mode off" ;;
 esac
 [ "$old" = 1 ] && [ ! -e "$ROOT/allow-unsupported" ] \
-    && say "note: this TV runs webOS ${rel:-?}. Apply hardening only runs on webOS 10 and newer, unless you run this line with OYG_FORCE_UNSUPPORTED=1 (untested)"
+    && say "note: this TV runs webOS ${rel:-?}. Apply hardening runs on webOS 3, 4 and 10 and newer, unless you run this line with OYG_FORCE_UNSUPPORTED=1 (untested)"
 
 fetch() { curl -fsSL "$1" 2>/dev/null || wget -qO- "$1" 2>/dev/null; }
 m=$(fetch "$MANIFEST") || die "cannot download $MANIFEST (is the TV online?)"

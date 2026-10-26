@@ -11,7 +11,19 @@ OYG_MOD_APPS=1
 #    trail).
 # Details, verification history and findings: docs/FINDINGS.md (F41)
 
-APPS_DIR=${APPS_DIR:-/var/preferences/com.webos.applicationManager/blockedSystemAppList}
+APPS_DIR_STOCK=/var/preferences/com.webos.applicationManager/blockedSystemAppList
+APPS_DIR=${APPS_DIR:-$APPS_DIR_STOCK}
+APPS_KEY=blocked_system_applist
+# webOS 4's app manager reads only blockedAppList/<REGION>.json, key
+# blocked_applist: its binary never mentions blockedSystemAppList. Anything
+# else (webOS 10, no sam to look at, or APPS_DIR set by hand) keeps the
+# list above.
+APPS_SAM=${APPS_SAM:-/usr/sbin/sam}
+if [ "$APPS_DIR" = "$APPS_DIR_STOCK" ] && [ -f "$APPS_SAM" ] && ! grep -q blockedSystemAppList "$APPS_SAM" 2>/dev/null \
+    && grep -q blockedAppList "$APPS_SAM" 2>/dev/null; then
+    APPS_DIR=${APPS_DIR%/*}/blockedAppList
+    APPS_KEY=blocked_applist
+fi
 APPS_BACKUP_DIR=${APPS_BACKUP_DIR:-"$OYG_BACKUP"}
 
 # Curated app IDs grouped by category. Each group is a comment-only
@@ -66,6 +78,7 @@ com.webos.app.svcdiagnostics com.webos.app.renewupdate
 #   apps.curated.skipped.list       — space-separated skipped IDs
 #   apps.existing.kept              — count of pre-existing IDs preserved
 #   apps.applied                    — "1" once harden completed
+#   apps.dir_created                — the list folder harden had to create
 
 # _mod_apps_glob_files
 #   Echo one candidate file per line, in glob order. Used to discover
@@ -82,28 +95,30 @@ _mod_apps_glob_files() {
 #   Pick the region file to operate on:
 #     1. If the directory already contains any *.json, use the first
 #        one in glob order (deterministic, the existing one wins).
-#     2. Otherwise pick a placeholder name based on a derived region
-#        from the env (OYG_APPS_REGION), falling back to "ESP" if
-#        unset.
-#   Echoes the absolute file path. Creates the parent directory if
-#   missing (mkdir -p; the dir is writable on this device).
+#     2. Otherwise name it after the region: OYG_APPS_REGION, else the
+#        TV's country (smartServiceCountryCode3, e.g. USA — the name LG's
+#        own list has), else "ESP".
+#   Echoes the absolute file path. Only reads: harden creates the
+#   directory when it is missing.
 _mod_apps_pick_file() {
     existing=$(_mod_apps_glob_files | head -n 1)
     if [ -n "$existing" ]; then
         printf '%s\n' "$existing"
         return 0
     fi
-    region=${OYG_APPS_REGION:-ESP}
-    if [ ! -d "$APPS_DIR" ]; then
-        if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR" >&2
-        elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
-            err "apps: cannot create $APPS_DIR" >&2
-            return 1
-        fi
+    if [ -n "${OYG_APPS_REGION:-}" ]; then
+        region=$OYG_APPS_REGION     # set by hand: used as given
+    else
+        region=$(oyg_luna luna://com.webos.settingsservice/getSystemSettings \
+            '{"category":"option","keys":["smartServiceCountryCode3"]}' \
+            | oyg_jget settings.smartServiceCountryCode3)
+        # Only a country code from the TV names the file (null, junk: ESP).
+        case $region in
+            [A-Z][A-Z][A-Z]) ;;
+            *) region=ESP ;;
+        esac
     fi
     printf '%s/%s.json\n' "$APPS_DIR" "$region"
-    return 0
 }
 
 # _mod_apps_region_from_path <path>
@@ -131,9 +146,9 @@ _mod_apps_region_from_path() {
 _mod_apps_extract_existing_ids() {
     f=$1
     [ -r "$f" ] || return 0
-    awk '
+    awk -v key="\"$APPS_KEY\"" '
         {
-            kn = index($0, "\"blocked_system_applist\"")
+            kn = index($0, key)
             if (kn == 0) next
             rest = substr($0, kn)
             lb = index(rest, "[")
@@ -213,7 +228,7 @@ _mod_apps_write_json() {
     tmp=$(mktemp 2>/dev/null) || return 1
     {
         printf '{'
-        printf '"blocked_system_applist":['
+        printf '"%s":[' "$APPS_KEY"
         first=1
         while IFS= read -r id; do
             [ -z "$id" ] && continue
@@ -262,9 +277,13 @@ mod_apps_harden() {
     require_root
     ensure_dirs
 
-    target=$(_mod_apps_pick_file) || return 1
+    target=$(_mod_apps_pick_file)
+    if [ ! -d "$APPS_DIR" ]; then
+        run mkdir -p "$APPS_DIR" 2>/dev/null || { err "apps: cannot create $APPS_DIR"; return 1; }
+        state_put "apps.dir_created" "$APPS_DIR"
+    fi
     region=$(_mod_apps_region_from_path "$target")
-    backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"
+    backup="$APPS_BACKUP_DIR/${APPS_DIR##*/}.${region}.json"
 
     state_put "apps.path"   "$target"
     state_put "apps.region" "$region"
@@ -405,7 +424,7 @@ mod_apps_restore() {
     fi
     if [ -z "$backup" ]; then
         region=$(_mod_apps_region_from_path "$target")
-        backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"
+        backup="$APPS_BACKUP_DIR/${APPS_DIR##*/}.${region}.json"
     fi
 
     rc=0
@@ -422,7 +441,8 @@ mod_apps_restore() {
     else
         # Sentinel backup means "no original existed at harden time":
         # remove the live file instead of copying anything over it.
-        if head -n 1 "$backup" 2>/dev/null | grep -q '^SENTINEL=absent'; then
+        # The sentinel's first line is a comment: look at the whole file.
+        if grep -q '^SENTINEL=absent' "$backup" 2>/dev/null; then
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: rm -f %s\n' "$target" >&2
             elif run rm -f "$target" 2>/dev/null; then
@@ -444,6 +464,18 @@ mod_apps_restore() {
             fi
         fi
     fi
+
+    # The folder harden made, once empty again.
+    created=$(state_get "apps.dir_created")
+    if [ -n "$created" ] && [ -d "$created" ] && [ -z "$(ls -A "$created" 2>/dev/null)" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: rmdir %s\n' "$created" >&2
+        elif run rmdir "$created" 2>/dev/null; then
+            ok "apps: removed $created (harden created it)"
+        fi
+    fi
+    # Kept while the folder is still there, so a later Undo tries again.
+    [ -n "$created" ] && [ -d "$created" ] || state_drop "apps.dir_created"
 
     state_drop "apps.path"
     state_drop "apps.region"

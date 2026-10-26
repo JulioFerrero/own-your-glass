@@ -180,17 +180,13 @@ resolver_alive() {
     if [ -z "${pid:-}" ] || ! kill -0 "$pid" 2>/dev/null; then
         return 1
     fi
-    if ! have nslookup; then
+    if ! have node; then
         # Last-resort: liveness = process is up.
         return 0
     fi
     # Probe a BLOCKED name — the answer (0.0.0.0/::) is generated locally
     # and is instant, unlike a forwarded name which waits on the upstream.
-    out=$(nslookup -port=53 -timeout=1 es.nextlgsdp.com "$DNS_BIND" 2>&1) || true
-    if printf '%s' "$out" | grep -Eq 'Address: '; then
-        return 0
-    fi
-    return 1
+    oyg_sink_probe "$RESOLVER" "$DNS_BIND" "$DNS_PORT"
 }
 
 # True resolv.conf path after following symlinks (/etc/resolv.conf ->
@@ -300,29 +296,26 @@ _write_resolv_src() {
     return 1
 }
 
-# Probe the resolver DIRECTLY on 127.0.0.2 with a blocked name (answer must
-# be 0.0.0.0 / ::) — proves it is live before resolv.conf points at it.
+# Probe the resolver DIRECTLY on 127.0.0.2 with a blocked name — proves it
+# answers before resolv.conf points at it. node, not nslookup: BusyBox 1.24
+# (webOS 4) takes no -port, so the optioned query could never succeed there.
 _probe_resolver_direct() {
-    have nslookup || return 0
-    out=$(nslookup -port=53 -timeout=2 es.nextlgsdp.com "$DNS_BIND" 2>&1) || true
-    case "$out" in
-        *0.0.0.0*|*::*) return 0 ;;
-    esac
-    return 1
+    have node || return 0
+    oyg_sink_probe "$RESOLVER" "$DNS_BIND" "$DNS_PORT"
 }
 
 # Verify THROUGH THE DEFAULT PATH (i.e. the resolver the box actually
-# uses): blocked name -> 0.0.0.0/::, allowed name -> real IP.
+# uses): blocked name -> 0.0.0.0/::, allowed name -> real IP. No nslookup
+# options: BusyBox 1.24 rejects them.
 _verify_default_path() {
     have nslookup || return 0
-    bl=$(nslookup -timeout=2 es.nextlgsdp.com 2>&1) || true
+    bl=$(nslookup es.nextlgsdp.com 2>&1 | oyg_dns_answers) || true
     case "$bl" in
         *0.0.0.0*|*::*) : ;;
         *) return 1 ;;
     esac
-    al=$(nslookup -timeout=2 www.youtube.com 2>&1) || true
-    for a in $(printf '%s\n' "$al" | grep 'Address:' |
-        sed 's/.*Address:[[:space:]]*//' | cut -d'#' -f1 | tr -d ' '); do
+    al=$(nslookup www.youtube.com 2>&1 | oyg_dns_answers) || true
+    for a in $al; do
         case "$a" in
             127.*|0.0.0.0|::|"") continue ;;
             *.*.*.*) return 0 ;;
@@ -818,7 +811,7 @@ cmd_test() {
 
     for d in "$@"; do
         printf '\n--- %s ---\n' "$d"
-        nslookup -timeout=2 "$d" "$DNS_BIND" 2>&1 | sed 's/^/  /'
+        nslookup "$d" "$DNS_BIND" 2>&1 | sed 's/^/  /'
     done
 
     if [ -f "$AUDIT_LOG" ]; then
@@ -851,4 +844,5 @@ main() {
     esac
 }
 
-main "$@"
+# tests/test_dns.sh sets OYG_DNS_LIB to source the functions without running.
+[ -n "${OYG_DNS_LIB:-}" ] || main "$@"

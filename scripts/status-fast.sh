@@ -114,7 +114,11 @@ fi
 # ------------------------------------------------------------------ MICS ----
 grp MICS "Microphones"
 n=$(count_binds 'pcmC[01]D[0-9]*c')
-if [ "$n" -gt 0 ]; then
+caps=0
+for f in /dev/snd/pcmC*c; do [ -e "$f" ] && caps=$((caps + 1)); done
+if [ "$caps" -eq 0 ] && [ -d /dev/snd ]; then
+    printf "MICS|NA|no built-in microphone (the remote's mic: see Voice)\n"
+elif [ "$n" -gt 0 ]; then
     printf 'MICS|OK|%s capture endpoint(s) neutralised (/dev/null)\n' "$n"
 else
     printf 'MICS|FAIL|no capture endpoints are bound\n'
@@ -187,7 +191,7 @@ fi
 # ------------------------------------------------------------------ APPS ----
 grp APPS "Hidden apps"
 if [ -r "$BL" ]; then
-    n=$(oyg_jflat <"$BL" | grep -c '^blocked_system_applist\[')
+    n=$(oyg_jflat <"$BL" | grep -cE '^blocked_(system_)?applist\[')
     printf 'APPS|OK|%s apps hidden from the launcher\n' "${n:-?}"
 else
     printf 'APPS|FAIL|blocklist not found\n'

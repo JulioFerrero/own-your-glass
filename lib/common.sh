@@ -21,6 +21,117 @@ have() {
     type "$1" >/dev/null 2>&1
 }
 
+# oyg_dns_answers — nslookup output on stdin, the answer addresses out, one
+# per line. BusyBox 1.24 (webOS 4) prints "Address 1: ip name", newer builds
+# "Address: ip". The addresses before "Name:" belong to the server asked.
+oyg_dns_answers() {
+    awk '/^Name:/ { n = 1; next }
+        n && /^Address[ 0-9]*:/ {
+            sub(/^Address[ 0-9]*:[ \t]*/, ""); sub(/[ \t#].*/, ""); print
+        }'
+}
+
+# oyg_sink_probe <dnssink.js> <addr> <port> [name] — exit 0 iff the sink
+# sent a well-formed DNS reply. Not nslookup: BusyBox 1.24's takes no
+# -port/-timeout, and a blocked name answering 0.0.0.0 is not a failure.
+oyg_sink_probe() {
+    have node || return 1
+    node "$1" --probe "$2" "$3" "${4:-es.nextlgsdp.com}" 2>/dev/null
+}
+
+# Services: systemd units on webOS 10, upstart jobs on webOS 4 (no
+# systemctl there). Modules name services by systemd unit; these helpers
+# map them to upstart jobs when that is what the TV runs.
+
+# oyg_init — the TV's init system: systemd, upstart or none.
+oyg_init() {
+    if have systemctl; then
+        printf 'systemd\n'
+    elif have initctl; then
+        printf 'upstart\n'
+    else
+        printf 'none\n'
+    fi
+}
+
+# oyg_unit_job <unit> — the upstart job that runs <unit>.
+oyg_unit_job() {
+    case $1 in
+        dmost.service) printf 'required_dmost\n' ;;
+        *.service) printf '%s\n' "${1%.service}" ;;
+        *.socket) printf '%s\n' "${1%.socket}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# oyg_unit_present <unit> — true if this TV has the unit (or its job).
+oyg_unit_present() {
+    case $(oyg_init) in
+        systemd) systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -Fxq -- "$1" ;;
+        upstart) initctl status "$(oyg_unit_job "$1")" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+# oyg_unit_query <unit> is-active|is-enabled — systemctl's answer. For an
+# upstart job: active/inactive from its state, enabled/disabled from
+# whether it has a "start on" (started at boot). "unknown" if no answer.
+oyg_unit_query() {
+    _oyg_q=
+    case $(oyg_init) in
+        systemd) _oyg_q=$(systemctl "$2" "$1" 2>/dev/null | tr -d '[:space:]') ;;
+        upstart)
+            _oyg_job=$(oyg_unit_job "$1")
+            case $2 in
+                is-active)
+                    case $(initctl status "$_oyg_job" 2>/dev/null) in
+                        *start/running*) _oyg_q=active ;;
+                        *stop/waiting*) _oyg_q=inactive ;;
+                        *start/*) _oyg_q=activating ;;
+                        *stop/*) _oyg_q=deactivating ;;
+                    esac ;;
+                is-enabled)
+                    if _oyg_cfg=$(initctl show-config "$_oyg_job" 2>/dev/null); then
+                        case $_oyg_cfg in
+                            *"start on "*) _oyg_q=enabled ;;
+                            *) _oyg_q=disabled ;;
+                        esac
+                    fi ;;
+            esac ;;
+    esac
+    printf '%s\n' "${_oyg_q:-unknown}"
+}
+
+# oyg_unit_stop <unit> / oyg_unit_start <unit> — through `run`, so a dry run
+# only prints (also on a box with no init system). As with systemctl,
+# stopping a stopped upstart job (or starting a running one) succeeds.
+oyg_unit_stop() {
+    case $(oyg_init) in
+        systemd) run systemctl stop "$1" ;;
+        upstart) _oyg_upstart stop "$1" inactive ;;
+        *) [ "$OYG_DRY_RUN" = "1" ] && printf 'DRY-RUN: stop %s\n' "$1" ;;
+    esac
+}
+
+oyg_unit_start() {
+    case $(oyg_init) in
+        systemd) run systemctl start "$1" ;;
+        upstart) _oyg_upstart start "$1" active ;;
+        *) [ "$OYG_DRY_RUN" = "1" ] && printf 'DRY-RUN: start %s\n' "$1" ;;
+    esac
+}
+
+# _oyg_upstart <stop|start> <unit> <state once done>
+_oyg_upstart() {
+    _oyg_job=$(oyg_unit_job "$2")
+    if [ "$OYG_DRY_RUN" = "1" ]; then
+        run initctl "$1" "$_oyg_job"
+        return
+    fi
+    run initctl "$1" "$_oyg_job" >/dev/null 2>&1 \
+        || [ "$(oyg_unit_query "$2" is-active)" = "$3" ]
+}
+
 # oyg_retire_backup <file> — after a restore has put <file> back, move it to
 # <file>.restored: kept for the record, and the next harden takes a fresh
 # backup instead of reviving this one over changes made since.
@@ -77,7 +188,9 @@ require_root() {
 }
 
 # oyg_supported — true on firmware the toolkit has been run on: webOS 10
-# (webOS 25). Otherwise false, with the reason in OYG_UNSUPPORTED.
+# (webOS 25) and newer, webOS 4 (4.10.1, 43UM7300) and webOS 3 (3.9.3,
+# 65UJ6300, sold as webOS 3.5). Otherwise false, with the reason in
+# OYG_UNSUPPORTED.
 # OYG_FORCE_UNSUPPORTED=1 accepts an older webOS, and so does the file
 # OYG_ALLOW_UNSUPPORTED (testing mode, left by
 # 'install-app.sh' run with OYG_FORCE_UNSUPPORTED=1), so that the app's
@@ -87,21 +200,24 @@ require_root() {
 # older version half-ran and left a TV that could neither restore nor
 # factory reset (F52).
 OYG_MIN_WEBOS=10
+OYG_OLD_WEBOS="3 4"
+OYG_OS_INFO=${OYG_OS_INFO:-/var/run/nyx/os_info.json}
 OYG_ALLOW_UNSUPPORTED="$OYG_ROOT/allow-unsupported"
 oyg_supported() {
     OYG_UNSUPPORTED=""
     _s_rel=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        /var/run/nyx/os_info.json 2>/dev/null | head -n 1)
+        "$OYG_OS_INFO" 2>/dev/null | head -n 1)
     if ! have node; then
         OYG_UNSUPPORTED="node is missing (webOS ${_s_rel:-unknown})"
         return 1
     fi
     case "${_s_rel%%.*}" in
         '' | *[!0-9]*)
-            OYG_UNSUPPORTED="cannot read webos_release from /var/run/nyx/os_info.json" ;;
+            OYG_UNSUPPORTED="cannot read webos_release from $OYG_OS_INFO" ;;
         *)
             [ "${_s_rel%%.*}" -ge "$OYG_MIN_WEBOS" ] && return 0
-            OYG_UNSUPPORTED="webOS $_s_rel is older than webOS $OYG_MIN_WEBOS, the only version this toolkit has been run on" ;;
+            case " $OYG_OLD_WEBOS " in *" ${_s_rel%%.*} "*) return 0 ;; esac
+            OYG_UNSUPPORTED="webOS $_s_rel has not been tested (this toolkit has been run on webOS 3, 4 and $OYG_MIN_WEBOS+)" ;;
     esac
     _s_force=${OYG_FORCE_UNSUPPORTED:-}
     [ -z "$_s_force" ] && [ -e "$OYG_ALLOW_UNSUPPORTED" ] && _s_force=1
