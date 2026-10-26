@@ -6,7 +6,7 @@
 # The 43UM7300's debloat targets: avahi and rdxd respawn, dmost runs as
 # required_dmost. The rest of the list doesn't exist on webOS 4.
 _webos4() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     stub luna-send 'echo "{\"returnValue\":true}"'
     stub mount
@@ -52,7 +52,7 @@ test_restore_starts_the_jobs_again() {
 }
 
 test_without_an_init_tool_the_other_passes_still_run() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     stub luna-send 'echo "{\"returnValue\":true}"'
     load_module debloat
@@ -62,7 +62,7 @@ test_without_an_init_tool_the_other_passes_still_run() {
 }
 
 test_harden_on_systemd_still_uses_systemctl() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     stub luna-send 'echo "{\"returnValue\":true}"'
     stub mount

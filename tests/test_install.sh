@@ -6,7 +6,7 @@
 
 # _install — install into $T_TMP and leave a hardened TV's stop lists there.
 _install() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     stub node
     stub ip 'echo "default via 192.168.1.1 dev wlan0"'
@@ -46,7 +46,7 @@ test_boot_hook_on_systemd_still_uses_systemctl() {
 }
 
 test_variant_c_refuses_without_systemd_and_touches_nothing() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     upstart_stub
     stub mount
     mkdir -p "$OYG_ROOT"
@@ -95,7 +95,7 @@ test_boot_hook_late_pass_stops_a_job_upstart_started_later() {
 }
 
 test_network_module_skips_variant_c_without_systemd() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     upstart_stub
     stub id 'echo 0'
     load_module network

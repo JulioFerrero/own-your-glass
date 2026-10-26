@@ -10,7 +10,7 @@ _lib() {
 
 # The stub dir is first on PATH, but the host may have a real systemctl.
 _no_systemctl() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
 }
 
 test_init_is_upstart_when_only_initctl_exists() {

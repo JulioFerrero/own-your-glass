@@ -6,7 +6,7 @@
 # A webOS 4 TV like the 43UM7300: contentminer runs, iot-client is stopped,
 # the other targets don't exist. No systemctl; harden runs as root.
 _webos4() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     upstart_stub
     upstart_job contentminer running "minimal-boot-done"
@@ -57,7 +57,7 @@ test_restore_starts_contentminer_again() {
 }
 
 test_harden_on_systemd_still_uses_systemctl() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     # shellcheck disable=SC2016 # expanded by the stub
     stub systemctl 'case $1 in list-unit-files) echo "contentminer.service enabled" ;; is-active) echo active ;; is-enabled) echo enabled ;; esac'

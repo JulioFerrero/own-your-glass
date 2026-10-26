@@ -50,7 +50,7 @@ sink_node() {
 }
 
 _load_dns() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     stub id 'echo 0'
     OYG_DNS_LIB=1
     # shellcheck source=scripts/dns.sh
@@ -87,7 +87,7 @@ test_answers_are_empty_when_the_name_does_not_resolve() {
 }
 
 test_layer3_resolves_a_public_name_on_busybox_1_24() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     nslookup_old
     load_module network
     assert_eq "$(_mod_network_resolve pub.example)" "93.184.216.34"
@@ -95,14 +95,14 @@ test_layer3_resolves_a_public_name_on_busybox_1_24() {
 }
 
 test_layer3_resolves_a_public_name_on_newer_busybox() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     nslookup_new
     load_module network
     assert_eq "$(_mod_network_resolve pub.example)" "93.184.216.34"
 }
 
 test_layer3_drops_sinkhole_private_and_server_addresses() {
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     load_module network
     for flavour in nslookup_old nslookup_new; do
         $flavour
@@ -156,7 +156,7 @@ test_resolver_alive_works_on_busybox_1_24() {
 
 test_resolver_alive_without_node_trusts_the_pid() {
     _load_dns
-    PATH=$T_STUBS:/bin:/usr/bin
+    PATH=$T_STUBS:$T_BIN
     sleep 30 &
     sinkpid=$!
     mkdir -p "$OYG_ROOT"
