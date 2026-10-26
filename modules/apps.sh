@@ -85,25 +85,15 @@ _mod_apps_glob_files() {
 #     2. Otherwise pick a placeholder name based on a derived region
 #        from the env (OYG_APPS_REGION), falling back to "ESP" if
 #        unset.
-#   Echoes the absolute file path. Creates the parent directory if
-#   missing (mkdir -p; the dir is writable on this device).
+#   Echoes the absolute file path. Only reads: harden creates the
+#   directory when it is missing.
 _mod_apps_pick_file() {
     existing=$(_mod_apps_glob_files | head -n 1)
     if [ -n "$existing" ]; then
         printf '%s\n' "$existing"
         return 0
     fi
-    region=${OYG_APPS_REGION:-ESP}
-    if [ ! -d "$APPS_DIR" ]; then
-        if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR" >&2
-        elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
-            err "apps: cannot create $APPS_DIR" >&2
-            return 1
-        fi
-    fi
-    printf '%s/%s.json\n' "$APPS_DIR" "$region"
-    return 0
+    printf '%s/%s.json\n' "$APPS_DIR" "${OYG_APPS_REGION:-ESP}"
 }
 
 # _mod_apps_region_from_path <path>
@@ -263,6 +253,14 @@ mod_apps_harden() {
     ensure_dirs
 
     target=$(_mod_apps_pick_file) || return 1
+    if [ ! -d "$APPS_DIR" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR"
+        elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
+            err "apps: cannot create $APPS_DIR"
+            return 1
+        fi
+    fi
     region=$(_mod_apps_region_from_path "$target")
     backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"
 

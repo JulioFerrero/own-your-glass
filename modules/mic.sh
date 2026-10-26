@@ -28,7 +28,9 @@ OYG_MOD_MIC=1
 #        that don't have /dev/snd (and so a fresh device with no
 #        /proc/asound/pcm is still covered).
 mod_mic_list_capture_nodes() {
-    _mic_tmp=${OYG_TMPDIR:-/tmp}
+    # Own scratch dir, removed below: status calls this too and must not
+    # leave files behind.
+    _mic_tmp=$(mktemp -d "${OYG_TMPDIR:-/tmp}/oyg-mic.XXXXXX") || return 1
     found_dynamic=0
     # Source 1: device nodes in /dev/snd ending in 'c'
     if [ -d /dev/snd ]; then
@@ -104,10 +106,8 @@ mod_mic_list_capture_nodes() {
 EOF
     fi
 
-    if [ "$found_dynamic" = "1" ]; then
-        return 0
-    fi
-    return 1
+    rm -rf "$_mic_tmp"
+    [ "$found_dynamic" = "1" ]
 }
 
 # mod_mic_node_to_alsa <node-path>
@@ -167,9 +167,6 @@ mod_mic_node_mode() {
 mod_mic_harden() {
     require_root
     ensure_dirs
-
-    OYG_TMPDIR=${OYG_TMPDIR:-/tmp}
-    rm -f "$OYG_TMPDIR/mic.devs" "$OYG_TMPDIR/mic.proc" 2>/dev/null || true
 
     nodes=$(mod_mic_list_capture_nodes)
     if [ -z "$nodes" ]; then
@@ -256,9 +253,6 @@ mod_mic_harden() {
     if [ "$bound_count" -gt 0 ]; then
         state_put "mic.applied" "1"
     fi
-
-    # Cleanup tmp
-    rm -f "$OYG_TMPDIR/mic.devs" "$OYG_TMPDIR/mic.proc" 2>/dev/null || true
 
     return $rc
 }

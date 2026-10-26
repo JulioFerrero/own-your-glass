@@ -143,13 +143,10 @@ cmd_list() {
     list_modules
 }
 
+# cmd_status [dry] — read-only: it never creates $OYG_ROOT or any file.
 cmd_status() {
-    OYG_DRY_RUN=0
-    [ "${1:-}" = "--dry-run" ] && OYG_DRY_RUN=1
+    OYG_DRY_RUN=${1:-0}
     export OYG_DRY_RUN
-    if [ -w "${OYG_ROOT%/*}" ] 2>/dev/null; then
-        ensure_dirs 2>/dev/null || true
-    fi
     printf '%s\n' "== own-your-glass status =="
     for m in $(all_modules); do
         load_module "$m" || continue
@@ -257,7 +254,7 @@ main() {
 
     case "$sub" in
         list)     cmd_list ;;
-        status)   cmd_status "$@" ;;
+        status)   cmd_status "$dry" ;;
         harden)   run_modules harden "$only" "$dry" ;;
         restore)  run_modules restore "$only" "$dry" || exit 1 ;;
         verify)   cmd_verify ;;

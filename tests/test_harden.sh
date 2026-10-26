@@ -40,3 +40,13 @@ test_network_harden_writes_the_hosts_file_and_binds_it() {
     n=$(grep -c '^0\.0\.0\.0 ' "$OYG_ROOT/hosts")
     assert_contains "$(cat "$T_TMP/out")" "generated $((n * 2)) hosts entries"
 }
+
+test_apps_harden_creates_the_list_dir_when_missing() {
+    in_container || skip "needs a throwaway container"
+    rm -rf /var/preferences/com.webos.applicationManager
+    stub luna-send 'echo "{\"returnValue\":true}"'
+    load_module apps
+    mod_apps_harden >"$T_TMP/out" 2>&1
+    [ -d /var/preferences/com.webos.applicationManager/blockedSystemAppList ] \
+        || fail "dir not created: $(cat "$T_TMP/out")"
+}
