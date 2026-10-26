@@ -72,3 +72,10 @@ test_harden_on_systemd_still_uses_systemctl() {
     mod_debloat_harden >/dev/null 2>&1
     assert_contains "$(calls)" "systemctl stop avahi-daemon.service"
 }
+
+test_dry_run_does_not_report_a_kill_that_never_happened() {
+    _webos4
+    stub pidof 'echo 3049'
+    out=$(OYG_DRY_RUN=1 mod_debloat_harden 2>&1)
+    assert_not_contains "$out" "still running after TERM+KILL"
+}

@@ -296,6 +296,7 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
     else
         oyg_unit_stop() { systemctl stop "\$1"; }
         oyg_unit_query() { echo unknown; }
+        oyg_unit_present() { return 0; }
     fi
     # restop <list> <label> — stop each unit in <list>. Upstart starts some
     # jobs on late events (rest-boot-done), so "was not running" is told
@@ -306,6 +307,8 @@ DEBLOAT_KILL_LIST=$OYG_DST/debloat.procs.kill
             case "\$svc" in
                 ''|\#*) continue ;;
             esac
+            # The list names every target; skip the ones this TV lacks.
+            oyg_unit_present "\$svc" || continue
             was=\$(oyg_unit_query "\$svc" is-active)
             if ! oyg_unit_stop "\$svc" 2>/dev/null; then
                 echo "[boot-hook] WARN: \$2: could not stop \$svc"

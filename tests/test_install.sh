@@ -38,7 +38,8 @@ test_boot_hook_stops_recorded_services_through_upstart() {
 
 test_boot_hook_on_systemd_still_uses_systemctl() {
     _install
-    stub systemctl
+    # shellcheck disable=SC2016 # expanded by the stub
+    stub systemctl 'case $1 in list-unit-files) printf "%s enabled\n" contentminer.service avahi-daemon.service dmost.service ;; esac'
     _boot
     assert_contains "$(calls)" "systemctl stop contentminer.service"
     assert_contains "$(calls)" "systemctl stop dmost.service"
@@ -101,4 +102,16 @@ test_network_module_skips_variant_c_without_systemd() {
     out=$(OYG_DNS_VARIANT_C=1 _mod_network_variant_c_harden "$OYG_SRC/scripts/dns.sh" 2>&1)
     assert_contains "$out" "Variant C skipped"
     assert_not_contains "$out" "restarting ConnMan"
+}
+
+test_boot_hook_skips_services_this_tv_does_not_have() {
+    _install
+    printf 'contentminer.service\nobjectdetection.service\n' >"$T_TMP/dst/services.stopped"
+    upstart_stub
+    upstart_job contentminer running "minimal-boot-done"
+    upstart_job avahi-daemon running "minimal-boot-done"
+    upstart_job required_dmost running "boot-done"
+    _boot
+    assert_not_contains "$(cat "$T_TMP/dst/boot.log")" "could not stop objectdetection"
+    assert_contains "$(cat "$T_TMP/dst/boot.log")" "services: stopped contentminer.service"
 }

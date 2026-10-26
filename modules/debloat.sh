@@ -732,6 +732,8 @@ mod_debloat_harden() {
                     IFS=$saved_ifs
                 fi
                 remaining=$(_mod_debloat_pids_for "$proc")
+                # A dry run signalled nothing, so the process is still there.
+                [ "$OYG_DRY_RUN" = "1" ] && remaining=
                 if [ -n "$remaining" ]; then
                     err "debloat: $id process <$proc> still running after TERM+KILL (pids: $(_mod_debloat_join_pids "$remaining"))"
                     rc=1
