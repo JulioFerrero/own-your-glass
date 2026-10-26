@@ -66,6 +66,7 @@ com.webos.app.svcdiagnostics com.webos.app.renewupdate
 #   apps.curated.skipped.list       — space-separated skipped IDs
 #   apps.existing.kept              — count of pre-existing IDs preserved
 #   apps.applied                    — "1" once harden completed
+#   apps.dir_created                — the list folder harden had to create
 
 # _mod_apps_glob_files
 #   Echo one candidate file per line, in glob order. Used to discover
