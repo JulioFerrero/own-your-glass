@@ -58,7 +58,11 @@ mod_logs_harden() {
         if [ -e "$f" ]; then
             sz=$(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null || echo unknown)
             warn "logs: $f exists (size=$sz) — clearing now + periodically"
-            : >"$f" 2>/dev/null || warn "logs: cannot truncate $f"
+            if [ "$OYG_DRY_RUN" = "1" ]; then
+                printf 'DRY-RUN: truncate %s\n' "$f"
+            else
+                : >"$f" 2>/dev/null || warn "logs: cannot truncate $f"
+            fi
         else
             warn "logs: $f not present yet"
         fi

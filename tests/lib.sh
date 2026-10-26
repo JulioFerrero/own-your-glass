@@ -19,6 +19,18 @@ fail() {
     exit 1
 }
 
+# skip <reason> — end the test without running it (shown as "skip").
+skip() {
+    printf 'SKIP: %s\n' "$*"
+    exit 0
+}
+
+# in_container — true inside a throwaway Docker container, where a test may
+# create files at real TV paths (/tmp/var/log, /var/luna, ...).
+in_container() {
+    [ -f /.dockerenv ]
+}
+
 assert_eq() {
     [ "$1" = "$2" ] || fail "${3:-values differ}: expected [$2], got [$1]"
 }

@@ -59,7 +59,7 @@ mod_capture_harden() {
     fi
 
     if [ -e "$CAPTURE_PATH" ] && have chattr; then
-        if chattr +i "$CAPTURE_PATH" 2>/dev/null; then
+        if run chattr +i "$CAPTURE_PATH" 2>/dev/null; then
             strategy="chattr-immutable"
             ok "capture: chattr +i applied to $CAPTURE_PATH"
         else
@@ -76,9 +76,9 @@ mod_capture_harden() {
                 0|00|000|0000|unknown) ;;
                 *) [ -n "$(state_get capture.file.mode.orig)" ] || state_put "capture.file.mode.orig" "$current" ;;
             esac
-            if chmod 000 "$CAPTURE_PATH" 2>/dev/null; then
+            if run chmod 000 "$CAPTURE_PATH" 2>/dev/null; then
                 ok "capture: chmod 000 applied to $CAPTURE_PATH (was $current)"
-            elif chmod 0600 "$CAPTURE_PATH" 2>/dev/null; then
+            elif run chmod 0600 "$CAPTURE_PATH" 2>/dev/null; then
                 ok "capture: chmod 0600 applied to $CAPTURE_PATH (was $current)"
             else
                 warn "capture: chmod denied on $CAPTURE_PATH"
