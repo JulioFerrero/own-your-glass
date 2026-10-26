@@ -188,7 +188,9 @@ require_root() {
 }
 
 # oyg_supported — true on firmware the toolkit has been run on: webOS 10
-# (webOS 25). Otherwise false, with the reason in OYG_UNSUPPORTED.
+# (webOS 25) and newer, webOS 4 (4.10.1, 43UM7300) and webOS 3 (3.9.3,
+# 65UJ6300, sold as webOS 3.5). Otherwise false, with the reason in
+# OYG_UNSUPPORTED.
 # OYG_FORCE_UNSUPPORTED=1 accepts an older webOS, and so does the file
 # OYG_ALLOW_UNSUPPORTED (testing mode, left by
 # 'install-app.sh' run with OYG_FORCE_UNSUPPORTED=1), so that the app's
@@ -198,21 +200,24 @@ require_root() {
 # older version half-ran and left a TV that could neither restore nor
 # factory reset (F52).
 OYG_MIN_WEBOS=10
+OYG_OLD_WEBOS="3 4"
+OYG_OS_INFO=${OYG_OS_INFO:-/var/run/nyx/os_info.json}
 OYG_ALLOW_UNSUPPORTED="$OYG_ROOT/allow-unsupported"
 oyg_supported() {
     OYG_UNSUPPORTED=""
     _s_rel=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        /var/run/nyx/os_info.json 2>/dev/null | head -n 1)
+        "$OYG_OS_INFO" 2>/dev/null | head -n 1)
     if ! have node; then
         OYG_UNSUPPORTED="node is missing (webOS ${_s_rel:-unknown})"
         return 1
     fi
     case "${_s_rel%%.*}" in
         '' | *[!0-9]*)
-            OYG_UNSUPPORTED="cannot read webos_release from /var/run/nyx/os_info.json" ;;
+            OYG_UNSUPPORTED="cannot read webos_release from $OYG_OS_INFO" ;;
         *)
             [ "${_s_rel%%.*}" -ge "$OYG_MIN_WEBOS" ] && return 0
-            OYG_UNSUPPORTED="webOS $_s_rel is older than webOS $OYG_MIN_WEBOS, the only version this toolkit has been run on" ;;
+            case " $OYG_OLD_WEBOS " in *" ${_s_rel%%.*} "*) return 0 ;; esac
+            OYG_UNSUPPORTED="webOS $_s_rel has not been tested (this toolkit has been run on webOS 3, 4 and $OYG_MIN_WEBOS+)" ;;
     esac
     _s_force=${OYG_FORCE_UNSUPPORTED:-}
     [ -z "$_s_force" ] && [ -e "$OYG_ALLOW_UNSUPPORTED" ] && _s_force=1

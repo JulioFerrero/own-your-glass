@@ -11,7 +11,7 @@
 # Environment:
 #   OYG_AGGRESSIVE=1          enable risky modules (services-extra, perms,
 #                             remoteone chmod)
-#   OYG_FORCE_UNSUPPORTED=1   harden on a webOS older than 10 (untested)
+#   OYG_FORCE_UNSUPPORTED=1   harden on webOS 5-9 (untested; 3, 4, 10+ are tested)
 #   OYG_NETWORK_BLOCK=1       opt in to the network module (four layers)
 #   OYG_NETWORK_STRICT=1      include STRICT section (ThinQ/voice/AI/LG)
 #   OYG_NETWORK_IPBLOCK=1     apply layer 3 (per-IP blackhole routes)
@@ -42,8 +42,8 @@ Usage:
 Environment flags (read by individual modules):
   OYG_AGGRESSIVE=1           enable risky modules (services-extra, perms,
                              remoteone chmod)
-  OYG_FORCE_UNSUPPORTED=1    harden on a webOS older than 10, which this
-                             toolkit has never been run on
+  OYG_FORCE_UNSUPPORTED=1    harden on webOS 5-9, which this toolkit has
+                             never been run on (3, 4 and 10+ are tested)
   OYG_NETWORK_BLOCK=1        opt in to the network module (four layers)
   OYG_NETWORK_STRICT=1       include STRICT section (ThinQ/voice/AI/LG)
   OYG_NETWORK_IPBLOCK=1      apply layer 3 (per-IP blackhole routes)
