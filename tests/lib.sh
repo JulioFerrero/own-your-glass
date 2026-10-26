@@ -25,10 +25,11 @@ skip() {
     exit 0
 }
 
-# in_container — true inside a throwaway Docker container, where a test may
-# create files at real TV paths (/tmp/var/log, /var/luna, ...).
+# in_container — true only in a throwaway container started for these tests
+# (docker run -e OYG_TEST_CONTAINER=1 ...): such tests create and delete
+# files at real TV paths (/var/luna, /mnt/lg, /usr/sbin, ...).
 in_container() {
-    [ -f /.dockerenv ]
+    [ "${OYG_TEST_CONTAINER:-0}" = "1" ] && [ -f /.dockerenv ]
 }
 
 assert_eq() {

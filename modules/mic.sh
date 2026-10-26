@@ -28,18 +28,13 @@ OYG_MOD_MIC=1
 #        that don't have /dev/snd (and so a fresh device with no
 #        /proc/asound/pcm is still covered).
 mod_mic_list_capture_nodes() {
-    # Own scratch dir, removed below: status calls this too and must not
-    # leave files behind.
-    _mic_tmp=$(mktemp -d "${OYG_TMPDIR:-/tmp}/oyg-mic.XXXXXX") || return 1
+    # Both sources are kept in variables, not files: status calls this too
+    # and must not write.
     found_dynamic=0
     # Source 1: device nodes in /dev/snd ending in 'c'
+    _mic_devs=
     if [ -d /dev/snd ]; then
-        for n in /dev/snd/pcmC*c; do
-            [ -e "$n" ] || continue
-            case "$n" in
-                *c) printf '%s\n' "$n" ;;
-            esac
-        done >"$_mic_tmp/mic.devs" 2>/dev/null
+        _mic_devs=$(for n in /dev/snd/pcmC*c; do [ -e "$n" ] && printf '%s\n' "$n"; done)
     fi
 
     # Source 2: /proc/asound/pcm — lines look like:
@@ -56,8 +51,9 @@ mod_mic_list_capture_nodes() {
     else
         _pcm_src=
     fi
+    _mic_proc=
     if [ -n "$_pcm_src" ]; then
-        awk -F': ' '
+        _mic_proc=$(awk -F': ' '
             /^ *[0-9]+-[0-9]+:/ {
                 split($1, hd, "-");
                 card = hd[1] + 0; dev  = hd[2] + 0;
@@ -68,7 +64,7 @@ mod_mic_list_capture_nodes() {
                 rest = $0; sub(/^[^:]*:[^:]*: /, "", rest);
                 if (rest ~ /capture/) printf "/dev/snd/pcmC%dD%dc\n", card, dev;
             }
-        ' "$_pcm_src" >"$_mic_tmp/mic.proc" 2>/dev/null
+        ' "$_pcm_src" 2>/dev/null)
     fi
 
     # Cross-check: keep a node only if it appears in BOTH sources.
@@ -76,24 +72,19 @@ mod_mic_list_capture_nodes() {
     # other source alone. If both are empty, fall back to the hardcoded
     # list — and tag the fallback so the caller knows the dynamic
     # enumeration was unavailable.
-    have_dev=0; have_proc=0
-    [ -s "$_mic_tmp/mic.devs" ]  && have_dev=1
-    [ -s "$_mic_tmp/mic.proc" ] && have_proc=1
-
-    if [ "$have_dev" = "1" ] && [ "$have_proc" = "1" ]; then
-        # Both: intersection, dynamic wins.
-        while IFS= read -r n; do
-            [ -z "$n" ] && continue
-            if grep -Fxq "$n" "$_mic_tmp/mic.proc"; then
+    if [ -n "$_mic_devs" ] && [ -n "$_mic_proc" ]; then
+        # Both: intersection, dynamic wins. Node paths have no spaces.
+        for n in $_mic_devs; do
+            if printf '%s\n' "$_mic_proc" | grep -Fxq -- "$n"; then
                 printf '%s\n' "$n"
                 found_dynamic=1
             fi
-        done <"$_mic_tmp/mic.devs"
-    elif [ "$have_dev" = "1" ]; then
-        cat "$_mic_tmp/mic.devs"
+        done
+    elif [ -n "$_mic_devs" ]; then
+        printf '%s\n' "$_mic_devs"
         found_dynamic=1
-    elif [ "$have_proc" = "1" ]; then
-        cat "$_mic_tmp/mic.proc"
+    elif [ -n "$_mic_proc" ]; then
+        printf '%s\n' "$_mic_proc"
         found_dynamic=1
     else
         # Fallback list, only used when nothing is enumerable on the box.
@@ -106,7 +97,6 @@ mod_mic_list_capture_nodes() {
 EOF
     fi
 
-    rm -rf "$_mic_tmp"
     [ "$found_dynamic" = "1" ]
 }
 

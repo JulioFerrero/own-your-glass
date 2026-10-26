@@ -6,7 +6,10 @@
 #
 # Each test_* function in a file runs in its own subshell with a fresh temp
 # dir (see tests/lib.sh). Run it in the TV's shell family too:
-#   docker run --rm --platform linux/amd64 -v "$PWD":/oyg -w /oyg busybox:1.26 sh tests/run.sh
+#   docker run --rm --platform linux/amd64 -e OYG_TEST_CONTAINER=1 \
+#       -v "$PWD":/oyg:ro -w /oyg busybox:1.26 sh tests/run.sh
+# OYG_TEST_CONTAINER=1 turns on the tests that write to real TV paths; only
+# set it in a throwaway container.
 #   dash tests/run.sh
 
 T_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)

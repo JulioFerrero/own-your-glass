@@ -22,6 +22,13 @@ tv_files() {
         >/var/preferences/com.webos.applicationManager/blockedSystemAppList/ESP.json
     printf 'cookie\n' >/mnt/lg/cmn_data/admanager/cookie/ad_cookie
     printf 'nameserver 192.168.4.1\n' >/var/lib/misc/resolv.conf
+    printf '{"eula":[{"id":"S_VNG","accepted":true},{"id":"S_TAG","accepted":true}]}\n' \
+        >/var/luna/preferences/eula
+    for d in cmn_data cache user; do
+        mkdir -p "/mnt/lg/$d/sdp/eula-service"
+        printf '{"terms":[{"managementTypeCode":"A","accepted":true}]}\n' \
+            >"/mnt/lg/$d/sdp/eula-service/eula.json"
+    done
     printf '%s\n' '00-00: PCM : PCM : playback 1' '00-11: MIC : MIC : capture 1' \
         >/opt/tv/asound-pcm
     OYG_PROC_ASOUND_PCM=/opt/tv/asound-pcm
@@ -40,17 +47,18 @@ device_stubs() {
     stub luna-send-pub 'echo "{\"returnValue\":true}"'
     # shellcheck disable=SC2016 # $1 belongs to the stub
     stub systemctl 'case $1 in is-active) echo active ;; is-enabled) echo enabled ;; esac'
-    for c in mount umount ip iptables ip6tables route; do stub "$c"; done
+    for c in mount umount ip iptables ip6tables route node; do stub "$c"; done
     [ -x "$T_STUBS/chattr" ] || stub chattr
 }
 
 # fs_state — every path outside the kernel trees, the sources and this
-# test's temp dir, with mode and checksum.
+# test's temp dir, with mode; files also with mtime (a truncate of an empty
+# file shows) and checksum.
 fs_state() {
     find / \( -path /proc -o -path /sys -o -path /dev -o -path "$OYG_SRC" -o -path "$T_TMP" \) -prune \
         -o -print 2>/dev/null | sort | while IFS= read -r f; do
         if [ -f "$f" ] && [ ! -L "$f" ]; then
-            printf '%s %s %s\n' "$f" "$(file_mode "$f")" "$(cksum <"$f")"
+            printf '%s %s %s\n' "$f" "$(stat -c '%a %Y' "$f")" "$(cksum <"$f")"
         else
             printf '%s %s\n' "$f" "$(file_mode "$f" 2>/dev/null)"
         fi

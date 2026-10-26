@@ -252,10 +252,10 @@ mod_apps_harden() {
     require_root
     ensure_dirs
 
-    target=$(_mod_apps_pick_file) || return 1
+    target=$(_mod_apps_pick_file)
     if [ ! -d "$APPS_DIR" ]; then
         if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR"
+            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR" >&2
         elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
             err "apps: cannot create $APPS_DIR"
             return 1
