@@ -122,15 +122,13 @@ _mod_perms_not_writable() {
     [ -e "$p" ] || { printf 'N/A\n'; return 0; }
     cur=$(stat -c '%a' "$p" 2>/dev/null || stat -f '%Lp' "$p" 2>/dev/null || echo unknown)
     [ "$cur" = "unknown" ] && { printf 'N/A\n'; return 0; }
-    # mode is an octal string; we want `& 022 == 0`. Strip any leading
-    # zero and use shell arithmetic. If the path is a directory the
-    # `g+w` / `o+w` check still applies — we want the dir not writable
-    # by group or other.
+    # mode is an octal string; we want `& 022 == 0`. A leading 0 makes
+    # shell arithmetic read it as octal (`8#` is not POSIX and older
+    # BusyBox rejects it). Directories too: not writable by group/other.
     case "$cur" in
         *[!0-7]*) printf 'N/A\n'; return 0 ;; # non-octal, refuse to judge
     esac
-    dec=$((8#$cur))
-    if [ $((dec & 022)) -eq 0 ]; then
+    if [ $((0$cur & 022)) -eq 0 ]; then
         printf '1\n'
     else
         printf '0\n'
