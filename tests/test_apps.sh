@@ -73,3 +73,23 @@ test_without_sam_the_webos10_layout_is_kept() {
     mod_apps_harden >/dev/null 2>&1
     [ -f "$PREFS/blockedSystemAppList/ESP.json" ] || fail "webOS 10 layout expected"
 }
+
+# webOS 3.9 (the 65UJ6300): sam reads blockedAppList, but the dir doesn't
+# exist yet. The new list must be named after the TV's country.
+test_a_new_list_is_named_after_the_tvs_country() {
+    _webos4
+    rm -rf "$PREFS/blockedAppList"
+    stub luna-send 'echo "{\"returnValue\":true,\"settings\":{\"smartServiceCountryCode3\":\"USA\"}}"'
+    load_module apps
+    mod_apps_harden >"$T_TMP/out" 2>&1
+    [ -f "$PREFS/blockedAppList/USA.json" ] || fail "USA.json expected: $(ls "$PREFS/blockedAppList" 2>&1)"
+}
+
+test_without_a_country_the_old_default_stays() {
+    _webos4
+    rm -rf "$PREFS/blockedAppList"
+    stub luna-send 'echo "{\"returnValue\":false}"'
+    load_module apps
+    mod_apps_harden >/dev/null 2>&1
+    [ -f "$PREFS/blockedAppList/ESP.json" ] || fail "ESP.json expected"
+}

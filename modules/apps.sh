@@ -95,9 +95,9 @@ _mod_apps_glob_files() {
 #   Pick the region file to operate on:
 #     1. If the directory already contains any *.json, use the first
 #        one in glob order (deterministic, the existing one wins).
-#     2. Otherwise pick a placeholder name based on a derived region
-#        from the env (OYG_APPS_REGION), falling back to "ESP" if
-#        unset.
+#     2. Otherwise name it after the region: OYG_APPS_REGION, else the
+#        TV's country (smartServiceCountryCode3, e.g. USA — the name LG's
+#        own list has), else "ESP".
 #   Echoes the absolute file path. Only reads: harden creates the
 #   directory when it is missing.
 _mod_apps_pick_file() {
@@ -106,7 +106,10 @@ _mod_apps_pick_file() {
         printf '%s\n' "$existing"
         return 0
     fi
-    printf '%s/%s.json\n' "$APPS_DIR" "${OYG_APPS_REGION:-ESP}"
+    region=${OYG_APPS_REGION:-$(oyg_luna luna://com.webos.settingsservice/getSystemSettings \
+        '{"category":"option","keys":["smartServiceCountryCode3"]}' \
+        | oyg_jget settings.smartServiceCountryCode3)}
+    printf '%s/%s.json\n' "$APPS_DIR" "${region:-ESP}"
 }
 
 # _mod_apps_region_from_path <path>
