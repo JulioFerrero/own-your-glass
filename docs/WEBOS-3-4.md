@@ -24,7 +24,8 @@ Both were rooted with Homebrew Channel (0.7.x). On each, on 2026-10-26:
    file modes, mounts and blackhole routes gone.
 5. Apply again, then: YouTube resolves, HTTPS works, AirPlay (43UM7300) keeps working.
 
-webOS 5 to 9 have not been tested and still need `OYG_FORCE_UNSUPPORTED=1` (testing mode).
+Any other version (webOS 5 to 9) has not been tested and still needs `OYG_FORCE_UNSUPPORTED=1`
+(testing mode).
 
 ## What differs, and how the toolkit handles it
 

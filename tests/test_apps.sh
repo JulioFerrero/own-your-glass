@@ -93,3 +93,12 @@ test_without_a_country_the_old_default_stays() {
     mod_apps_harden >/dev/null 2>&1
     [ -f "$PREFS/blockedAppList/ESP.json" ] || fail "ESP.json expected"
 }
+
+test_a_country_code_that_is_not_one_falls_back_to_esp() {
+    _webos4
+    rm -rf "$PREFS/blockedAppList"
+    stub luna-send 'echo "{\"returnValue\":true,\"settings\":{\"smartServiceCountryCode3\":null}}"'
+    load_module apps
+    mod_apps_harden >/dev/null 2>&1
+    [ -f "$PREFS/blockedAppList/ESP.json" ] || fail "ESP.json expected: $(ls "$PREFS/blockedAppList" 2>&1)"
+}

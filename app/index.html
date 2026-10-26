@@ -491,7 +491,7 @@ function statusCmd() {
 function shortErr(e) {
   var t = String(e), lines = t.split(/\\n|\n/), i;
   for (i = 0; i < lines.length; i++)
-    if (/can't open|not found|No such|denied|refus|older than/i.test(lines[i])) return lines[i].slice(0, 160);
+    if (/can't open|not found|No such|denied|refus|older than|not been tested/i.test(lines[i])) return lines[i].slice(0, 160);
   return t.slice(0, 160);
 }
 function loadStatus() {

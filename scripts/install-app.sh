@@ -6,8 +6,8 @@
 #
 #   ssh root@<tv-ip> 'curl -fsSL https://raw.githubusercontent.com/JulioFerrero/own-your-glass/main/scripts/install-app.sh | sh'
 #
-# On webOS 5-9, which the toolkit has never been run on, Apply hardening
-# refuses (webOS 3, 4 and 10+ are tested). '| OYG_FORCE_UNSUPPORTED=1 sh' turns testing mode on
+# On a webOS other than 3, 4 and 10+, which the toolkit has never been run
+# on (webOS 5-9), Apply hardening refuses. '| OYG_FORCE_UNSUPPORTED=1 sh' turns testing mode on
 # (Apply then runs anyway), '| OYG_FORCE_UNSUPPORTED=0 sh' turns it off.
 # OYG_MANIFEST_URL=<url> installs from another manifest (a test build).
 

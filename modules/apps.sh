@@ -109,7 +109,12 @@ _mod_apps_pick_file() {
     region=${OYG_APPS_REGION:-$(oyg_luna luna://com.webos.settingsservice/getSystemSettings \
         '{"category":"option","keys":["smartServiceCountryCode3"]}' \
         | oyg_jget settings.smartServiceCountryCode3)}
-    printf '%s/%s.json\n' "$APPS_DIR" "${region:-ESP}"
+    # Only a country code goes into the file name (null, junk: ESP).
+    case $region in
+        [A-Z][A-Z][A-Z]) ;;
+        *) region=ESP ;;
+    esac
+    printf '%s/%s.json\n' "$APPS_DIR" "$region"
 }
 
 # _mod_apps_region_from_path <path>
