@@ -12,6 +12,16 @@ OYG_MOD_APPS=1
 # Details, verification history and findings: docs/FINDINGS.md (F41)
 
 APPS_DIR=${APPS_DIR:-/var/preferences/com.webos.applicationManager/blockedSystemAppList}
+APPS_KEY=blocked_system_applist
+# webOS 4's app manager reads only blockedAppList/<REGION>.json, key
+# blocked_applist: its binary never mentions blockedSystemAppList. Anything
+# else (webOS 10, or no sam to look at) keeps the list above.
+APPS_SAM=${APPS_SAM:-/usr/sbin/sam}
+if [ -f "$APPS_SAM" ] && ! grep -q blockedSystemAppList "$APPS_SAM" 2>/dev/null \
+    && grep -q blockedAppList "$APPS_SAM" 2>/dev/null; then
+    APPS_DIR=${APPS_DIR%/*}/blockedAppList
+    APPS_KEY=blocked_applist
+fi
 APPS_BACKUP_DIR=${APPS_BACKUP_DIR:-"$OYG_BACKUP"}
 
 # Curated app IDs grouped by category. Each group is a comment-only
@@ -122,9 +132,9 @@ _mod_apps_region_from_path() {
 _mod_apps_extract_existing_ids() {
     f=$1
     [ -r "$f" ] || return 0
-    awk '
+    awk -v key="\"$APPS_KEY\"" '
         {
-            kn = index($0, "\"blocked_system_applist\"")
+            kn = index($0, key)
             if (kn == 0) next
             rest = substr($0, kn)
             lb = index(rest, "[")
@@ -204,7 +214,7 @@ _mod_apps_write_json() {
     tmp=$(mktemp 2>/dev/null) || return 1
     {
         printf '{'
-        printf '"blocked_system_applist":['
+        printf '"%s":[' "$APPS_KEY"
         first=1
         while IFS= read -r id; do
             [ -z "$id" ] && continue
@@ -259,7 +269,7 @@ mod_apps_harden() {
         state_put "apps.dir_created" "$APPS_DIR"
     fi
     region=$(_mod_apps_region_from_path "$target")
-    backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"
+    backup="$APPS_BACKUP_DIR/${APPS_DIR##*/}.${region}.json"
 
     state_put "apps.path"   "$target"
     state_put "apps.region" "$region"
@@ -400,7 +410,7 @@ mod_apps_restore() {
     fi
     if [ -z "$backup" ]; then
         region=$(_mod_apps_region_from_path "$target")
-        backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"
+        backup="$APPS_BACKUP_DIR/${APPS_DIR##*/}.${region}.json"
     fi
 
     rc=0

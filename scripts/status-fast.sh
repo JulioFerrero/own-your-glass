@@ -187,7 +187,7 @@ fi
 # ------------------------------------------------------------------ APPS ----
 grp APPS "Hidden apps"
 if [ -r "$BL" ]; then
-    n=$(oyg_jflat <"$BL" | grep -c '^blocked_system_applist\[')
+    n=$(oyg_jflat <"$BL" | grep -cE '^blocked_(system_)?applist\[')
     printf 'APPS|OK|%s apps hidden from the launcher\n' "${n:-?}"
 else
     printf 'APPS|FAIL|blocklist not found\n'
