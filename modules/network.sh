@@ -38,10 +38,10 @@ LG_HARDCODED_IPS="156.147.69.32 165.244.62.249 165.244.99.174"
 # table. Sinkhole, loopback and private answers are dropped.
 _mod_network_resolve() {
     have nslookup || return 0
-    nslookup "$1" 2>/dev/null | awk '
-        /^Address: / && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ \
-            && $2 !~ /^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {
-            print $2; exit
+    nslookup "$1" 2>/dev/null | oyg_dns_answers | awk '
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ \
+            && !/^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {
+            print; exit
         }'
 }
 
@@ -750,8 +750,8 @@ mod_network_status() {
             print_status N/A "network: layer4 — not enabled (set OYG_DNS_RESOLVER=1)"
         fi
     else
-        if nslookup -timeout=1 -port=53 example.com "$DNS_BIND" >/dev/null 2>&1 \
-            || nslookup -timeout=1 example.com "$DNS_BIND" >/dev/null 2>&1; then
+        dns_bin=$(_dns_bin) || dns_bin=
+        if oyg_sink_probe "${dns_bin%/*}/dnssink.js" "$DNS_BIND" "$DNS_PORT"; then
             print_status OK "network: layer4 — resolver answering on $DNS_BIND:$DNS_PORT"
         else
             print_status FAIL "network: layer4 — resolver NOT answering on $DNS_BIND:$DNS_PORT"

@@ -21,6 +21,24 @@ have() {
     type "$1" >/dev/null 2>&1
 }
 
+# oyg_dns_answers — nslookup output on stdin, the answer addresses out, one
+# per line. BusyBox 1.24 (webOS 4) prints "Address 1: ip name", newer builds
+# "Address: ip". The addresses before "Name:" belong to the server asked.
+oyg_dns_answers() {
+    awk '/^Name:/ { n = 1; next }
+        n && /^Address[ 0-9]*:/ {
+            sub(/^Address[ 0-9]*:[ \t]*/, ""); sub(/[ \t#].*/, ""); print
+        }'
+}
+
+# oyg_sink_probe <dnssink.js> <addr> <port> [name] — exit 0 iff the sink
+# sent a well-formed DNS reply. Not nslookup: BusyBox 1.24's takes no
+# -port/-timeout, and a blocked name answering 0.0.0.0 is not a failure.
+oyg_sink_probe() {
+    have node || return 1
+    node "$1" --probe "$2" "$3" "${4:-es.nextlgsdp.com}" 2>/dev/null
+}
+
 # Services: systemd units on webOS 10, upstart jobs on webOS 4 (no
 # systemctl there). Modules name services by systemd unit; these helpers
 # map them to upstart jobs when that is what the TV runs.
