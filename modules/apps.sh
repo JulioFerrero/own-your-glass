@@ -66,6 +66,7 @@ com.webos.app.svcdiagnostics com.webos.app.renewupdate
 #   apps.curated.skipped.list       — space-separated skipped IDs
 #   apps.existing.kept              — count of pre-existing IDs preserved
 #   apps.applied                    — "1" once harden completed
+#   apps.dir_created                — the list folder harden had to create
 
 # _mod_apps_glob_files
 #   Echo one candidate file per line, in glob order. Used to discover
@@ -85,25 +86,15 @@ _mod_apps_glob_files() {
 #     2. Otherwise pick a placeholder name based on a derived region
 #        from the env (OYG_APPS_REGION), falling back to "ESP" if
 #        unset.
-#   Echoes the absolute file path. Creates the parent directory if
-#   missing (mkdir -p; the dir is writable on this device).
+#   Echoes the absolute file path. Only reads: harden creates the
+#   directory when it is missing.
 _mod_apps_pick_file() {
     existing=$(_mod_apps_glob_files | head -n 1)
     if [ -n "$existing" ]; then
         printf '%s\n' "$existing"
         return 0
     fi
-    region=${OYG_APPS_REGION:-ESP}
-    if [ ! -d "$APPS_DIR" ]; then
-        if [ "$OYG_DRY_RUN" = "1" ]; then
-            printf 'DRY-RUN: mkdir -p %s\n' "$APPS_DIR" >&2
-        elif ! mkdir -p "$APPS_DIR" 2>/dev/null; then
-            err "apps: cannot create $APPS_DIR" >&2
-            return 1
-        fi
-    fi
-    printf '%s/%s.json\n' "$APPS_DIR" "$region"
-    return 0
+    printf '%s/%s.json\n' "$APPS_DIR" "${OYG_APPS_REGION:-ESP}"
 }
 
 # _mod_apps_region_from_path <path>
@@ -262,7 +253,11 @@ mod_apps_harden() {
     require_root
     ensure_dirs
 
-    target=$(_mod_apps_pick_file) || return 1
+    target=$(_mod_apps_pick_file)
+    if [ ! -d "$APPS_DIR" ]; then
+        run mkdir -p "$APPS_DIR" 2>/dev/null || { err "apps: cannot create $APPS_DIR"; return 1; }
+        state_put "apps.dir_created" "$APPS_DIR"
+    fi
     region=$(_mod_apps_region_from_path "$target")
     backup="$APPS_BACKUP_DIR/blockedSystemAppList.${region}.json"
 
@@ -422,7 +417,8 @@ mod_apps_restore() {
     else
         # Sentinel backup means "no original existed at harden time":
         # remove the live file instead of copying anything over it.
-        if head -n 1 "$backup" 2>/dev/null | grep -q '^SENTINEL=absent'; then
+        # The sentinel's first line is a comment: look at the whole file.
+        if grep -q '^SENTINEL=absent' "$backup" 2>/dev/null; then
             if [ "$OYG_DRY_RUN" = "1" ]; then
                 printf 'DRY-RUN: rm -f %s\n' "$target" >&2
             elif run rm -f "$target" 2>/dev/null; then
@@ -444,6 +440,18 @@ mod_apps_restore() {
             fi
         fi
     fi
+
+    # The folder harden made, once empty again.
+    created=$(state_get "apps.dir_created")
+    if [ -n "$created" ] && [ -d "$created" ] && [ -z "$(ls -A "$created" 2>/dev/null)" ]; then
+        if [ "$OYG_DRY_RUN" = "1" ]; then
+            printf 'DRY-RUN: rmdir %s\n' "$created" >&2
+        elif run rmdir "$created" 2>/dev/null; then
+            ok "apps: removed $created (harden created it)"
+        fi
+    fi
+    # Kept while the folder is still there, so a later Undo tries again.
+    [ -n "$created" ] && [ -d "$created" ] || state_drop "apps.dir_created"
 
     state_drop "apps.path"
     state_drop "apps.region"

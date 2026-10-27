@@ -162,21 +162,26 @@ mod_network_layer1_harden() {
         warn "network: STRICT section enabled — ThinQ / voice / AI / LG cloud blocked (BREAKS FEATURES)"
     }
 
-    {
+    # $HOSTS_GEN is what /etc/hosts shows while bound, so a dry run only
+    # counts the entries it would write.
+    hosts=$(
         printf '127.0.0.1 localhost\n'
         _mod_network_collect_domains "$section" \
             | awk '{ printf "0.0.0.0 %s\n::1 %s\n", $1, $1 }'
-    } >"$HOSTS_GEN" 2>/dev/null
-    cp "$HOSTS_GEN" "$HOSTS_GEN_INSPECT" 2>/dev/null || true
-    v4_count=$(grep -c '^0\.0\.0\.0 ' "$HOSTS_GEN" 2>/dev/null | tr -d ' ')
-    v6_count=$(grep -c '^::1 ' "$HOSTS_GEN" 2>/dev/null | tr -d ' ')
+    )
+    v4_count=$(printf '%s\n' "$hosts" | grep -c '^0\.0\.0\.0 ')
+    v6_count=$(printf '%s\n' "$hosts" | grep -c '^::1 ')
     count=$((v4_count + v6_count))
-    ok "network: layer1 — generated $count hosts entries at $HOSTS_GEN (v4=$v4_count v6=$v6_count)"
 
     if [ "$OYG_DRY_RUN" = "1" ]; then
+        ok "network: layer1 — would generate $count hosts entries at $HOSTS_GEN (v4=$v4_count v6=$v6_count)"
         printf 'DRY-RUN: mount --bind %s %s\n' "$HOSTS_GEN" "$HOSTS_TARGET"
         return 0
     fi
+
+    printf '%s\n' "$hosts" >"$HOSTS_GEN" 2>/dev/null
+    cp "$HOSTS_GEN" "$HOSTS_GEN_INSPECT" 2>/dev/null || true
+    ok "network: layer1 — generated $count hosts entries at $HOSTS_GEN (v4=$v4_count v6=$v6_count)"
 
     # /etc/hosts is 0644 on a stock TV; the toolkit's umask (077) would make
     # the bound copy root-only.
@@ -223,7 +228,9 @@ mod_network_layer1_restore() {
     else
         ok "network: layer1 — /etc/hosts was not bind-mounted by own-your-glass"
     fi
-    if [ -f "$HOSTS_GEN" ]; then
+    if [ -f "$HOSTS_GEN" ] && [ "$OYG_DRY_RUN" = "1" ]; then
+        printf 'DRY-RUN: rm %s\n' "$HOSTS_GEN"
+    elif [ -f "$HOSTS_GEN" ]; then
         rm -f "$HOSTS_GEN" 2>/dev/null \
             && ok "network: layer1 — removed generated $HOSTS_GEN" \
             || warn "network: layer1 — could not remove $HOSTS_GEN"

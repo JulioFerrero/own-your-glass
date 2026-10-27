@@ -282,7 +282,6 @@ mod_services_harden() {
     warn "services: enforcement is 'stop unit + kill process + re-apply on every boot' (systemctl mask is impossible on this device: read-only /etc)"
 
     rc=0
-    : >"$_mod_services_dryrun_state" 2>/dev/null || true
     for spec in $(_mod_services_active_specs); do
         id=$(printf '%s' "$spec"   | awk -F'|' '{print $1}')
         unit=$(printf '%s' "$spec" | awk -F'|' '{print $2}')
@@ -366,6 +365,7 @@ mod_services_harden() {
             ok "services: $id — already stopped ($unit_note, $proc_note)"
         fi
     done
+    rm -f "$_mod_services_dryrun_state" 2>/dev/null
     state_put "services.applied" "1"
     [ "$rc" = "0" ] && return 0 || return 1
 }

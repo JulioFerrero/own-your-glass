@@ -493,6 +493,7 @@ mod_policy_harden() {
         # In dry-run we DO NOT mutate the file, so the AFTER count
         # would equal the BEFORE count. Report the planned effect
         # instead and skip the on-disk sanity check.
+        rm -f "$tmp"
         if [ -n "${OYG_TOS_IDS:-}" ]; then
             n=$(printf '%s\n' "$OYG_TOS_IDS" | wc -w | tr -d ' ')
             ok "policy: would decline $n allow-listed entr(y/ies) (before=$before)"
