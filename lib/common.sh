@@ -89,12 +89,22 @@ require_root() {
 OYG_MIN_WEBOS=10
 OYG_ALLOW_UNSUPPORTED="$OYG_ROOT/allow-unsupported"
 
+# _oyg_nyx_release — nyx-cmd bounded to 5 s, since nyx may still be starting.
+# BusyBox before 1.30 spells it 'timeout -t'; with no timeout at all it is skipped.
+_oyg_nyx_release() {
+    if timeout 1 true 2>/dev/null; then
+        timeout -s KILL 5 nyx-cmd OSInfo query webos_release
+    elif timeout -t 1 true 2>/dev/null; then
+        timeout -t 5 -s KILL nyx-cmd OSInfo query webos_release
+    fi 2>/dev/null | head -n 1
+}
+
 # oyg_webos_release — e.g. "10.3.1". nyx writes os_info.json a few seconds
 # after the boot hook starts, so the hook falls back to nyx-cmd and starfish-release.
 oyg_webos_release() {
     _r=$(sed -n 's/.*"webos_release"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         /var/run/nyx/os_info.json 2>/dev/null | head -n 1)
-    [ -n "$_r" ] || ! have nyx-cmd || _r=$(nyx-cmd OSInfo query webos_release 2>/dev/null | head -n 1)
+    [ -n "$_r" ] || ! have nyx-cmd || _r=$(_oyg_nyx_release)
     [ -n "$_r" ] || _r=$(sed -n 's/.* release \([0-9][0-9.]*\).*/\1/p' /etc/starfish-release 2>/dev/null | head -n 1)
     printf '%s' "$_r"
 }
