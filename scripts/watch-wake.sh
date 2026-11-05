@@ -12,7 +12,8 @@ fi
 URI=luna://com.webos.service.tvpower/power/getPowerState
 FIFO="$OYG_ROOT/watchers/watch-wake.fifo"
 
-# luna-send writes into a FIFO so its pid is known and it dies with the watcher.
+# luna-send writes into a FIFO rather than a pipe so its pid is known and
+# it dies with the watcher instead of holding the subscription open.
 lpid=""
 cleanup() {
     [ -n "$lpid" ] && kill "$lpid" 2>/dev/null
@@ -25,6 +26,7 @@ trap cleanup EXIT
 on_wake() {
     # DNS first — puts the TV back on the internet after standby. dns.sh start
     # revives the resolver, re-asserts the resolv.conf override, respawns the watchdog.
+    : >"$OYG_ROOT/wake.log" 2>/dev/null || true
     if [ "$(state_get network.dns_resolver 2>/dev/null)" = "1" ] \
         || [ "$(state_get dns.applied 2>/dev/null)" = "1" ]; then
         up=$(state_get dns.upstream 2>/dev/null || true)
@@ -66,9 +68,9 @@ while :; do
     luna-send -n 1000000 "$URI" '{"subscribe":true}' </dev/null >"$FIFO" 2>/dev/null &
     lpid=$!
     while IFS= read -r line; do
-        # "processing" replies are transition steps, not a settled state.
+        # "processing" replies are steps inside a transition, not a settled state.
         case "$line" in *'"processing"'*) continue ;; esac
-        state=$(printf '%s\n' "$line" | grep -o '"state": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+        state=$(printf '%s\n' "$line" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
         [ -n "$state" ] || continue
         if [ "$state" = Active ] && [ -n "$prev" ] && [ "$prev" != Active ]; then
             on_wake
@@ -77,7 +79,7 @@ while :; do
     done <"$FIFO"
     wait "$lpid" 2>/dev/null
     lpid=""
-    # Stream dropped; the TV may have slept and woken while it was down.
+    # The stream dropped; the TV may have slept and woken while it was down.
     prev=unknown
     sleep 5
 done
