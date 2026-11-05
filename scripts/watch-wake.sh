@@ -63,7 +63,7 @@ while :; do
     while IFS= read -r line; do
         # "processing" replies are steps inside a transition, not a settled state.
         case "$line" in *'"processing"'*) continue ;; esac
-        state=$(printf '%s\n' "$line" | sed -n 's/.*"state": *"\\([^"]*\\)".*/\\1/p')
+	state=$(printf '%s\n' "$line" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
         [ -n "$state" ] || continue
         if [ "$state" = Active ] && [ -n "$prev" ] && [ "$prev" != Active ]; then
             on_wake
