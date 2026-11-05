@@ -50,7 +50,7 @@ on_wake() {
             fi
             i=$((i + 1))
             if [ "$i" -lt 2 ]; then
-                echo "$(date '+%Y-%m-%dT%H:%M:%S') watch-wake: dns.sh start failed (try $i) — retrying in 45 s" >>"$OYG_ROOT/wake.log"
+                warn "watch-wake: dns.sh start failed (try $i) — retrying in 45 s (see $OYG_ROOT/dns.log)" >>"$OYG_ROOT/wake.log" 2>&1
                 sleep 45 2>/dev/null || sleep 45
             fi
         done
