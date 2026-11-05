@@ -370,7 +370,11 @@ apps LG loads late. A remote power-off suspends the TV instead of
 rebooting it, and LG resumes with the preload switched back on, so
 `scripts/watch-wake.sh` (started by `harden`, stopped by `restore`)
 follows the tvpower state and runs the same pass on every return to
-`Active`. Restore sets the preload switches back; closed apps
+`Active`. The same wake hook also re-asserts the DNS sinkhole
+(`dns.sh start`, idempotent): the resolver or its watchdog may not have
+survived standby, and without this the TV would wake with no DNS until a
+cold reboot. Restore sets the preload switches back; closed apps
+
 are not reopened, LG loads them again when it wants them.
 
 **Measured on this device (Tier A + Tier B applied):**
@@ -999,7 +1003,7 @@ own-your-glass/
 ├── scripts/dnssink.js             on-device DNS sinkhole resolver (Node.js, no modules) — UDP + TCP on 127.0.0.2:53, suffix-matches /var/lib/own-your-glass/hosts; --probe is the watchdog's health check
 ├── scripts/dns.sh                 operator entry point: start|apply|ensure|confirm|revert|stop|status|log|test — hooks the resolver in via a /etc/resolv.conf bind-mount (never touches ConnMan; auto-revert timer on apply)
 ├── scripts/watch-dns.sh           watchdog: re-asserts the resolv.conf override, restarts the resolver on death, reverts the override if it cannot come back
-├── scripts/watch-wake.sh          re-runs the debloat background-app pass each time the TV wakes from standby
+├── scripts/watch-wake.sh          on each wake from standby: re-asserts the DNS sinkhole (dns.sh start) and re-runs the debloat background-app pass
 ├── scripts/build-app.sh          package app/ (with a bundled copy of the toolkit) into an installable .ipk, plus its Homebrew Channel manifest
 ├── .github/workflows/release.yml  on a v<version> tag: build the app and publish the ipk and manifest as a GitHub release
 ├── app/                          the control panel: a webOS app that runs the toolkit from the remote
