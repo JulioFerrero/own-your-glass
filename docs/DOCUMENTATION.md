@@ -374,7 +374,6 @@ follows the tvpower state and runs the same pass on every return to
 (`dns.sh start`, idempotent): the resolver or its watchdog may not have
 survived standby, and without this the TV would wake with no DNS until a
 cold reboot. Restore sets the preload switches back; closed apps
-
 are not reopened, LG loads them again when it wants them.
 
 **Measured on this device (Tier A + Tier B applied):**
